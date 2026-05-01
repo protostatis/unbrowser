@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -289,6 +290,12 @@ struct Session {
     // Fetch worker queue — held to keep the worker thread alive and to
     // expose results to settle() via __pollFetches() driven by the JS layer.
     _fetch: Arc<FetchQueue>,
+    // Global eval-time deadline (unix-ms). 0 = no deadline. Read by the
+    // QuickJS interrupt handler installed once at Session::new and bumped
+    // by the per-RPC dispatcher and the navigate script phase. Without
+    // this every exec_scripts=true call on a hostile SPA could leave a
+    // CPU-pegged process behind.
+    eval_deadline_ms: Arc<AtomicU64>,
     last_url: Option<String>,
     last_body: Option<String>,
 }
@@ -297,6 +304,24 @@ impl Session {
     fn new() -> Result<Self> {
         let js_rt = rquickjs::Runtime::new().context("rquickjs Runtime::new")?;
         let js_ctx = rquickjs::Context::full(&js_rt).context("rquickjs Context::full")?;
+
+        // Install the always-on watchdog. Every nested QuickJS eval (including
+        // ones inside settle's __pumpTimers callbacks and __pollFetches
+        // resolvers) consults this atomic. Default 0 = no bound; the dispatcher
+        // bumps it before each RPC call.
+        let eval_deadline_ms: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+        let dl_for_handler = eval_deadline_ms.clone();
+        js_rt.set_interrupt_handler(Some(Box::new(move || {
+            let deadline = dl_for_handler.load(Ordering::Relaxed);
+            if deadline == 0 {
+                return false;
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            now >= deadline
+        })));
         let jar = Arc::new(CookieJar::default());
         let http = rquest::Client::builder()
             .emulation(rquest_util::Emulation::Chrome131)
@@ -386,9 +411,28 @@ impl Session {
             http,
             jar,
             _fetch: fetch,
+            eval_deadline_ms,
             last_url: None,
             last_body: None,
         })
+    }
+
+    // Set a wall-clock deadline (ms from now) that bounds every JS eval until
+    // restored. Returns the previous deadline so the caller can restore it
+    // (supports nested deadlines — the script phase tightens the navigate
+    // budget, then restores the outer dispatcher budget). A budget of 0 means
+    // "leave it unbounded"; the dispatcher should never call that.
+    fn set_eval_deadline_from_now(&self, ms: u64) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let new_dl = now.saturating_add(ms);
+        self.eval_deadline_ms.swap(new_dl, Ordering::Relaxed)
+    }
+
+    fn restore_eval_deadline(&self, prev: u64) {
+        self.eval_deadline_ms.store(prev, Ordering::Relaxed);
     }
 
     // Eval that doesn't try to JSON.stringify the result. Right tool for
@@ -497,13 +541,12 @@ impl Session {
                         tokio::spawn(async move {
                             let fut = async {
                                 match http.get(&url).send().await {
-                                    Ok(resp) if resp.status().is_success() => match resp
-                                        .text()
-                                        .await
-                                    {
-                                        Ok(body) => Ok(body),
-                                        Err(e) => Err(format!("read {url}: {e}")),
-                                    },
+                                    Ok(resp) if resp.status().is_success() => {
+                                        match resp.text().await {
+                                            Ok(body) => Ok(body),
+                                            Err(e) => Err(format!("read {url}: {e}")),
+                                        }
+                                    }
                                     Ok(resp) => {
                                         Err(format!("status {} fetching {}", resp.status(), url))
                                     }
@@ -560,18 +603,13 @@ impl Session {
             //
             // Bound total eval time. Heavy React/Vue bundles can run pathological
             // top-level code in QuickJS for tens of seconds; we don't want a
-            // single navigate hanging the binary. The interrupt handler fires
-            // periodically inside QuickJS; returning true aborts the running
-            // script with InternalError. Default budget: 5s for ALL scripts
-            // together. Scripts after the budget gets exhausted get aborted on
-            // their first interrupt check.
+            // single navigate hanging the binary. The watchdog interrupt
+            // handler installed in Session::new fires periodically inside
+            // QuickJS and aborts any running script (or settle pump callback,
+            // or microtask) once the deadline passes. Tighten the outer
+            // dispatcher budget to 5s for the script-eval phase, then restore.
             const SCRIPT_EVAL_BUDGET_MS: u64 = 5000;
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(SCRIPT_EVAL_BUDGET_MS);
-            self.js_rt
-                .set_interrupt_handler(Some(Box::new(move || {
-                    std::time::Instant::now() >= deadline
-                })));
+            let prev_deadline = self.set_eval_deadline_from_now(SCRIPT_EVAL_BUDGET_MS);
 
             let mut eval_errors: Vec<String> = Vec::new();
             let mut executed: usize = 0;
@@ -593,13 +631,14 @@ impl Session {
                 }
             }
 
-            // Clear the handler so subsequent eval/query/etc calls (including
-            // those inside settle's __pumpTimers, __pollFetches) are not bounded.
-            self.js_rt.set_interrupt_handler(None);
+            // Restore the dispatcher's outer deadline so settle's pumps run
+            // under the broader navigate budget rather than the tight 5s
+            // script-phase one. (Settle pump callbacks are bounded too — they
+            // run inside QuickJS evals which still consult the same atomic.)
+            self.restore_eval_deadline(prev_deadline);
             // Fire DOMContentLoaded → settle → load → settle.
-            let _ = self.eval(
-                "typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()",
-            );
+            let _ = self
+                .eval("typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()");
             let after_dcl = self.settle(2000, 100).await.ok();
             let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
             let after_load = self.settle(1500, 50).await.ok();
@@ -1397,6 +1436,14 @@ async fn rpc_main() -> Result<()> {
         };
 
         let id = req.id.clone();
+        // Bound EVERY RPC call's JS work with a 30s wall-clock deadline.
+        // The watchdog interrupt handler installed in Session::new aborts any
+        // running eval (script-phase, settle pump, microtask, query) once
+        // the deadline passes. Without this, exec_scripts=true on hostile
+        // SPAs left CPU-pegged orphan processes behind. Restore on the way
+        // out so back-to-back calls each get a fresh budget.
+        const DISPATCH_BUDGET_MS: u64 = 30_000;
+        let prev_dispatch_deadline = session.set_eval_deadline_from_now(DISPATCH_BUDGET_MS);
         let resp = match req.method.as_str() {
             "eval" => {
                 let code = req
@@ -1541,6 +1588,7 @@ async fn rpc_main() -> Result<()> {
             }
             other => err_response(id, -32601, format!("unknown method: {other}")),
         };
+        session.restore_eval_deadline(prev_dispatch_deadline);
         write_response(&mut out, &resp)?;
     }
     Ok(())
@@ -1810,7 +1858,12 @@ async fn mcp_main() -> Result<()> {
             "tools/call" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
-                match dispatch_tool(&mut session, name, &arguments).await {
+                // Same 30s watchdog budget as the bare-RPC dispatcher.
+                const DISPATCH_BUDGET_MS: u64 = 30_000;
+                let prev = session.set_eval_deadline_from_now(DISPATCH_BUDGET_MS);
+                let outcome = dispatch_tool(&mut session, name, &arguments).await;
+                session.restore_eval_deadline(prev);
+                match outcome {
                     Ok(value) => {
                         let text = serde_json::to_string_pretty(&value)?;
                         Ok(json!({
