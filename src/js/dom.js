@@ -620,8 +620,8 @@
   }
 
   function matchesSingle(el, part) {
-    // Simple selector: tag#id.class[attr=val]:pseudo(arg)
-    var re = /^([a-zA-Z0-9_-]*)?(?:#([a-zA-Z0-9_-]+))?(?:\.([a-zA-Z0-9_. -]+))?(?:\[([a-zA-Z0-9_-]+)(?:([~|^$*]?)=["']?([^"'\]]*?)["']?)?\])?(?::([a-z-]+)(?:\(([^)]+)\))?)?$/;
+    // Simple selector: tag#id.class[attr=val]:pseudo(arg) or `*` (universal)
+    var re = /^(\*|[a-zA-Z0-9_-]*)?(?:#([a-zA-Z0-9_-]+))?(?:\.([a-zA-Z0-9_. -]+))?(?:\[([a-zA-Z0-9_-]+)(?:([~|^$*]?)=["']?([^"'\]]*?)["']?)?\])?(?::([a-z-]+)(?:\(([^)]+)\))?)?$/;
     var m = part.match(re);
     if (!m) return false;
 
@@ -629,7 +629,8 @@
     var attrName = m[4], attrOp = m[5], attrVal = m[6];
     var pseudoName = m[7], pseudoArg = m[8];
 
-    if (tag && el.tagName !== tag.toUpperCase()) return false;
+    // `*` matches any tag; non-empty tag must match exactly.
+    if (tag && tag !== '*' && el.tagName !== tag.toUpperCase()) return false;
     if (id && el.id !== id) return false;
     if (classes) {
       var clsList = classes.split('.');

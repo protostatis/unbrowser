@@ -378,6 +378,32 @@
     return output;
   };
 
+  // ---- console ---------------------------------------------------------
+  // QuickJS doesn't ship console by default; page scripts use it constantly
+  // (Ember, React, Vue, jQuery, …). Default to no-op so script execution
+  // doesn't crash. Could route to host stderr later if visibility helps debugging.
+  globalThis.console = globalThis.console || {
+    log:        function() {},
+    warn:       function() {},
+    error:      function() {},
+    info:       function() {},
+    debug:      function() {},
+    trace:      function() {},
+    table:      function() {},
+    group:      function() {},
+    groupCollapsed: function() {},
+    groupEnd:   function() {},
+    time:       function() {},
+    timeEnd:    function() {},
+    timeLog:    function() {},
+    assert:     function() {},
+    dir:        function() {},
+    dirxml:     function() {},
+    count:      function() {},
+    countReset: function() {},
+    clear:      function() {},
+  };
+
   // ---- crypto -----------------------------------------------------------
   // getRandomValues uses Math.random — fine for non-security uses (which is
   // most of what page scripts do with it). subtle.digest stub returns an
