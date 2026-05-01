@@ -895,7 +895,7 @@ async fn mcp_main() -> Result<()> {
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": {} },
                 "serverInfo": {
-                    "name": "unchained_browser",
+                    "name": "unbrowse",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             })),

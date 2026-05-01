@@ -1,4 +1,4 @@
-"""router.py — Auto-escalation router for unchained_browser.
+"""router.py — Auto-escalation router for unbrowse.
 
 Wraps the binary as a subprocess. On `navigate`, inspects the response's
 `challenge` field (the private-core-aligned shape: provider, confidence,
@@ -54,7 +54,7 @@ class RouterError(Exception):
 
 
 class Router:
-    """Synchronous client for unchained_browser with auto-escalation."""
+    """Synchronous client for unbrowse with auto-escalation."""
 
     def __init__(self, config: RouterConfig):
         self.cfg = config
@@ -194,7 +194,7 @@ class Router:
 def cached_cookies_solver(cookies_path: str) -> Solver:
     """Load cookies from a JSON file. Use for cached "solve-once-in-Chrome" flows.
 
-    Accepts both unchained_browser format ({name, value, domain, path,
+    Accepts both unbrowse format ({name, value, domain, path,
     secure, http_only}) and CDP format ({httpOnly, ...}); auto-converts the
     latter to the former.
     """
@@ -240,7 +240,7 @@ def unchained_cli_solver(profile: str = "Profile 5", port: int = 9333) -> Solver
 
 
 def _normalize_cookie(c: dict) -> dict:
-    """Convert a CDP-shaped cookie to unchained_browser's shape (or pass through)."""
+    """Convert a CDP-shaped cookie to unbrowse's shape (or pass through)."""
     return {
         "name": c["name"],
         "value": c["value"],
@@ -274,7 +274,7 @@ def _demo() -> None:
     parser.add_argument("--cookies", default=None,
                         help="Path to a cached cookies JSON file (CDP or ub format)")
     parser.add_argument("--binary", default=None,
-                        help="Path to the unchained_browser binary (default: cargo run --quiet)")
+                        help="Path to the unbrowse binary (default: cargo run --quiet)")
     args = parser.parse_args()
 
     binary = args.binary or os.path.expanduser("~/.cargo/bin/cargo")
@@ -284,7 +284,7 @@ def _demo() -> None:
         cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # Spawn manually since RouterConfig only takes single binary.
         # Easiest: pre-build with cargo, then exec the binary directly.
-        target = os.path.join(cwd, "target", "debug", "unchained_browser")
+        target = os.path.join(cwd, "target", "debug", "unbrowse")
         if not os.path.exists(target):
             print(f"[demo] building binary at {target} ...")
             subprocess.run([binary, "build", "--quiet"], cwd=cwd, check=True)

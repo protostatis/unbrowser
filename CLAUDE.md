@@ -1,4 +1,4 @@
-# unchained_browser
+# unbrowse
 
 Single statically-linked native binary that gives an LLM a headless browser with real JS execution. No rendering — designed for LLM tool-call use, not human viewing.
 
@@ -8,7 +8,7 @@ Distinct from `~/Projects/sky-search` (QuickJS-WASM in user's browser, with ifra
 
 The four-way landscape:
 
-| | curl/fetch | LLM WebFetch/Search | unchained_browser | Full Chrome |
+| | curl/fetch | LLM WebFetch/Search | unbrowse | Full Chrome |
 |---|---|---|---|---|
 | Runs JS | No | No (provider-side, opaque) | Yes (QuickJS) | Yes (V8, JIT) |
 | SPA-capable | No | Sometimes | Yes | Yes |
@@ -86,13 +86,13 @@ Skip `bridge.js` (no iframe). Skip the WebSocket/server layers entirely.
 6. ✅ **BlockMap** — `src/js/blockmap.js` walks DOM landmarks/headings/interactives, returns structured JSON + ASCII outline. **`navigate` returns blockmap inline** so the agent gets one-shot orientation. Verified: HN (no semantic tags) → fallback to significant top-level children; Wikipedia (full landmarks) → header/nav/main/footer with refs.
 7. ✅ **Interactivity (v1)** — `src/js/interact.js` provides `__byRef`, `__click`, `__type`, `__formData`. RPC methods `click` / `type` / `submit`. Click on `<a href>` auto-follows (resolves relative URLs against current page, then navigates). Submit is GET-only for v1. Verified end-to-end: HN → `type rquest` into `input[name=q]` → `submit` → landed on `https://hn.algolia.com/?q=rquest`.
 8. (skipped 8/9/10 numbering)
-11a. ✅ **Cookie jar** — `CookieJar` struct in `main.rs` implements `rquest::cookie::CookieStore`. Cookies in response `Set-Cookie` headers auto-populate; cookies are auto-sent on subsequent requests to matching domains. RPC methods `cookies_set` (object or string form, accepts `{name, value, domain, path?, secure?, http_only?, url?}`), `cookies_get`, `cookies_clear`. Persistence (file save/load) is the agent driver's responsibility — the binary is stateless. **The killer use case:** solve a PerimeterX/Datadome/Cloudflare challenge once in real Chrome, copy the clearance cookie via DevTools, paste into a `cookies_set` call, run unchained_browser against the protected site for the cookie's lifetime. End-to-end verified against `zillow.com/homes/for_rent/`: 403+captcha without cookies → 200+626KB rentals page with cookies replayed.
-12. ✅ **MCP server mode** — `unchained_browser --mcp` enters Model Context Protocol mode: JSON-RPC 2.0 on stdio with `initialize` / `tools/list` / `tools/call` / `ping`. All 12 RPC methods exposed as MCP tools (everything except `close` — host manages lifecycle). JSON schemas inline for tool discovery. Result content returned as pretty-printed JSON in a single `text` content item. Errors set `isError: true`. Verified via Python driver: handshake → tools/list → tools/call navigate → tools/call query with sibling combinator → bad-tool-name returns isError=true.
+11a. ✅ **Cookie jar** — `CookieJar` struct in `main.rs` implements `rquest::cookie::CookieStore`. Cookies in response `Set-Cookie` headers auto-populate; cookies are auto-sent on subsequent requests to matching domains. RPC methods `cookies_set` (object or string form, accepts `{name, value, domain, path?, secure?, http_only?, url?}`), `cookies_get`, `cookies_clear`. Persistence (file save/load) is the agent driver's responsibility — the binary is stateless. **The killer use case:** solve a PerimeterX/Datadome/Cloudflare challenge once in real Chrome, copy the clearance cookie via DevTools, paste into a `cookies_set` call, run unbrowse against the protected site for the cookie's lifetime. End-to-end verified against `zillow.com/homes/for_rent/`: 403+captcha without cookies → 200+626KB rentals page with cookies replayed.
+12. ✅ **MCP server mode** — `unbrowse --mcp` enters Model Context Protocol mode: JSON-RPC 2.0 on stdio with `initialize` / `tools/list` / `tools/call` / `ping`. All 12 RPC methods exposed as MCP tools (everything except `close` — host manages lifecycle). JSON schemas inline for tool discovery. Result content returned as pretty-printed JSON in a single `text` content item. Errors set `isError: true`. Verified via Python driver: handshake → tools/list → tools/call navigate → tools/call query with sibling combinator → bad-tool-name returns isError=true.
 13. ✅ **Challenge detector aligned with private-core** — `detect_challenge` in main.rs now uses private-core's vendor names (`perimeterx_block`, `cloudflare_turnstile`, `arkose_labs`, `recaptcha`, `press_hold`, `generic_human_verification`) plus `datadome`, `akamai_bmp`, `imperva` from prior version. Output shape `{blocked, provider, confidence, status, matched, clearance_cookie, reason, hint}` matches private-core's `ChallengeDetectionResult` plus actionability fields (`clearance_cookie`, `hint`). Picks highest-confidence match (not first), so e.g. an `arkose_labs` page mentioning "captcha" reports as arkose, not generic.
 14. ✅ **Auto-escalation router** — `scripts/router.py`. Wraps the binary, intercepts `navigate`, inspects `challenge` field, calls a pluggable `chrome_solver(url) -> [cookies]` callback when blocked, replays via `cookies_set`, retries. Reference solvers: `cached_cookies_solver(path)` (loads from JSON file — supports CDP and ub formats), `unchained_cli_solver(profile)` (shells out to existing unchainedsky CLI). Errors clearly when blocked with no solver. End-to-end verified: HN clean (no escalation), Zillow no-solver (helpful error), Zillow cached-solver (replays 51 cookies, gets real listings).
 8. **Intel** — port `intel.js`, `extract` command with auto-strategy
 9. **Profile system** — `profiles/chrome_*.toml`, profile selector, fingerprint test harness against a known FP-detection corpus
-10. **TUI viewer** — separate `unchained_browser watch` binary tailing NDJSON
+10. **TUI viewer** — separate `unbrowse watch` binary tailing NDJSON
 
 ## Current RPC methods
 
@@ -118,14 +118,14 @@ Add to your MCP host's config (Claude Desktop's `claude_desktop_config.json`, Cl
 {
   "mcpServers": {
     "unchained-headless": {
-      "command": "/Users/zhiminzou/Projects/unchained_browser/target/release/unchained_browser",
+      "command": "/Users/zhiminzou/Projects/unbrowse/target/release/unbrowse",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-(or `target/debug/unchained_browser` for the debug build during development). All 12 tools discoverable via `tools/list`.
+(or `target/debug/unbrowse` for the debug build during development). All 12 tools discoverable via `tools/list`.
 
 **BlockMap shape:** `{title, structure: [{role, ref, ident, counts, summary}], headings: [{level, text, ref}], interactives: {links, buttons, inputs: [...], forms: [...]}, density: {tables, td, li, json_scripts, likely_js_filled}, ascii: "<multiline>"}`. The `ascii` field is human-readable; `structure`/`headings`/`interactives`/`density` are what the agent uses to plan queries. Landmarks (`header, nav, main, aside, footer, article, section`) are detected first; if none, the walker falls back to significant top-level children of `<body>`.
 

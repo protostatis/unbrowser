@@ -1,11 +1,11 @@
-# unchained_browser
+# unbrowse
 
 **Web access for LLM agents. One static binary. No Chrome.**
 
 ```bash
 cargo build --release
 echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' \
-  | ./target/release/unchained_browser
+  | ./target/release/unbrowse
 ```
 
 That's the install. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.
@@ -36,7 +36,7 @@ This isn't a Chrome wrapper that an agent uses through a Puppeteer-shaped abstra
 - **Stable element refs** (`e:142`) — query, click, type, submit using opaque handles. The LLM never has to scrape the DOM itself.
 - **`challenge` field on every blocked navigate** — provider, confidence, and the exact clearance cookie name. The agent reacts intelligently instead of guessing.
 - **`density.likely_js_filled` heuristic** — distinguishes "real SSR page" from "SSR shell with JS-filled cells" (the CNBC trap). The agent bails before burning round-trips on a page it can't read.
-- **MCP-native** — `unchained_browser --mcp` exposes 12 tools to any MCP host (Claude Code, Claude Desktop, Cursor, Cline). 4 lines of config, zero glue code.
+- **MCP-native** — `unbrowse --mcp` exposes 12 tools to any MCP host (Claude Code, Claude Desktop, Cursor, Cline). 4 lines of config, zero glue code.
 - **Real Chrome fingerprint** (Chrome 131 JA4 + Akamai H2 hash) so sites don't block you for being a script.
 
 For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the binary detects them and accepts cookies via `cookies_set` — so you solve once in Chrome and replay forever here.
@@ -45,7 +45,7 @@ For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the b
 
 ```python
 import subprocess, json
-p = subprocess.Popen(["./target/release/unchained_browser"],
+p = subprocess.Popen(["./target/release/unbrowse"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
 i = 0
 def call(method, **params):
@@ -79,7 +79,7 @@ If most of your pages are static or SSR, this. If most are SPAs, Playwright. If 
 ### MCP (no glue)
 
 ```json
-{"mcpServers":{"unchained":{"command":"unchained_browser","args":["--mcp"]}}}
+{"mcpServers":{"unchained":{"command":"unbrowse","args":["--mcp"]}}}
 ```
 
 12 tools auto-discovered by Claude Code, Claude Desktop, Cursor, Cline.
@@ -94,7 +94,7 @@ If most of your pages are static or SSR, this. If most are SPAs, Playwright. If 
 from scripts.router import Router, RouterConfig, cached_cookies_solver
 
 with Router(RouterConfig(
-    binary="./target/release/unchained_browser",
+    binary="./target/release/unbrowse",
     chrome_solver=cached_cookies_solver("cookies.json"),
 )) as r:
     r.navigate("https://www.zillow.com/homes/for_rent/")  # auto-handles 403 + cookie replay

@@ -1533,7 +1533,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "unchained_browser"
+name = "unbrowse"
 version = "0.0.1"
 dependencies = [
  "anyhow",
