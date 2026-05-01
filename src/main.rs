@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+mod profile;
+use profile::Profile;
+
 const DOM_JS: &str = include_str!("js/dom.js");
 const SHIMS_JS: &str = include_str!("js/shims.js");
 const BLOCKMAP_JS: &str = include_str!("js/blockmap.js");
@@ -302,7 +305,7 @@ struct Session {
 }
 
 impl Session {
-    fn new() -> Result<Self> {
+    fn new(profile: &Profile) -> Result<Self> {
         let js_rt = rquickjs::Runtime::new().context("rquickjs Runtime::new")?;
         let js_ctx = rquickjs::Context::full(&js_rt).context("rquickjs Context::full")?;
 
@@ -325,7 +328,7 @@ impl Session {
         })));
         let jar = Arc::new(CookieJar::default());
         let http = rquest::Client::builder()
-            .emulation(rquest_util::Emulation::Chrome131)
+            .emulation(profile.emulation)
             .cookie_provider(jar.clone())
             // .emulation(...) appears to clobber the default redirect policy.
             // Explicit follow-up-to-10 matches Chrome's behavior on http://github.com,
@@ -356,6 +359,12 @@ impl Session {
                 .map_err(|e| anyhow!("eval interact.js: {e}"))?;
             ctx.eval::<(), _>(EXTRACT_JS)
                 .map_err(|e| anyhow!("eval extract.js: {e}"))?;
+            // Apply profile-driven navigator.* patches AFTER shims.js
+            // installs the base navigator object. Page scripts that read
+            // navigator.userAgent / .platform / .languages now see the
+            // profile values, coherent with the TLS+H2 emulation above.
+            ctx.eval::<(), _>(profile.js_init())
+                .map_err(|e| anyhow!("eval profile.js_init: {e}"))?;
 
             // __host_fetch_send(id, method, url, headers_json, body) — fire-and-forget.
             // headers_json is a JSON-encoded string from JS to avoid converting
@@ -1458,11 +1467,34 @@ fn emit_event(name: &str, fields: Value) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--mcp") {
-        mcp_main().await
-    } else {
-        rpc_main().await
+    if args.iter().any(|a| a == "--list-profiles") {
+        for n in profile::Profile::list_builtin() {
+            println!("{n}");
+        }
+        return Ok(());
     }
+    let profile_name = parse_profile_arg(&args);
+    let profile = Profile::load(&profile_name)?;
+    if args.iter().any(|a| a == "--mcp") {
+        mcp_main(profile).await
+    } else {
+        rpc_main(profile).await
+    }
+}
+
+// `--profile <name>` or `--profile=<name>`. Falls back to UNBROWSE_PROFILE
+// env var, then the built-in default.
+fn parse_profile_arg(args: &[String]) -> String {
+    for (i, a) in args.iter().enumerate() {
+        if a == "--profile" {
+            if let Some(next) = args.get(i + 1) {
+                return next.clone();
+            }
+        } else if let Some(rest) = a.strip_prefix("--profile=") {
+            return rest.to_string();
+        }
+    }
+    std::env::var("UNBROWSE_PROFILE").unwrap_or_else(|_| profile::DEFAULT_PROFILE.to_string())
 }
 
 // Per-RPC wall-clock budget for JS eval. Default 30s — fits the watchdog
@@ -1478,8 +1510,9 @@ fn read_dispatch_budget_ms() -> u64 {
         .unwrap_or(30_000)
 }
 
-async fn rpc_main() -> Result<()> {
-    let mut session = Session::new()?;
+async fn rpc_main(profile: Profile) -> Result<()> {
+    let profile_name = profile.name.clone();
+    let mut session = Session::new(&profile)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();
@@ -1491,6 +1524,7 @@ async fn rpc_main() -> Result<()> {
         json!({
             "version": env!("CARGO_PKG_VERSION"),
             "dispatch_budget_ms": dispatch_budget_ms,
+            "profile": profile_name,
         }),
     );
 
@@ -1902,8 +1936,8 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
     }
 }
 
-async fn mcp_main() -> Result<()> {
-    let mut session = Session::new()?;
+async fn mcp_main(profile: Profile) -> Result<()> {
+    let mut session = Session::new(&profile)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();

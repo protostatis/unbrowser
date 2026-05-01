@@ -15,10 +15,11 @@ http = "1"
 markup5ever_rcdom = "=0.38.0"
 rquickjs = { version = "0.11" }
 rquest = { version = "5", features = ["cookies"] }
-rquest-util = "2"
+rquest-util = { version = "2", features = ["emulation-serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 url = "2"
 
 [profile.release]
