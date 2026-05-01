@@ -498,8 +498,12 @@ fn format_js_exception(ex: rquickjs::Value) -> String {
 // Returns the *highest-confidence* match, not the first. Returns None on the
 // happy path (no signatures matched).
 fn detect_challenge(status: u16, body: &str) -> Option<Value> {
-    // Cheap early-out: large 2xx responses are almost certainly real content.
-    if (200..300).contains(&status) && body.len() > 8000 {
+    // Cheap early-out: very large 2xx responses are almost certainly real
+    // content (article pages, marketplace results). Real challenge pages are
+    // typically under 50KB; the 80KB threshold buys headroom while still
+    // catching cases like eBay's "Pardon Our Interruption" interstitial
+    // (200 + 13KB, would be missed by an 8KB threshold).
+    if (200..300).contains(&status) && body.len() > 80_000 {
         return None;
     }
     let lower = body.to_lowercase();
@@ -599,6 +603,25 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
             &["_incapsula", "incident_id"],
             "incap_ses_*",
         ),
+        // "Pardon Our Interruption" / "Are you a robot" interstitials —
+        // typically status 200 + small body + a friendly title. eBay,
+        // Distil Networks-class, some Imperva deployments. Confidence set
+        // above cloudflare_turnstile (0.97) because these phrases are MORE
+        // specific than "checking your browser" / "just a moment" — eBay's
+        // Distil page contains both, and we want the specific match to win.
+        (
+            "interstitial",
+            0.99,
+            &[
+                "pardon our interruption",
+                "are you a robot",
+                "are you a human",
+                "automated access has been blocked",
+                "your browser has been flagged",
+                "as you were browsing",
+            ],
+            "",
+        ),
         (
             "generic_human_verification",
             0.76,
@@ -607,6 +630,7 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
                 "verify that you are human",
                 "unusual traffic",
                 "access to this page has been denied",
+                "access denied",
                 "automated requests",
                 "sorry, you have been blocked",
             ],
