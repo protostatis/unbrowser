@@ -472,33 +472,70 @@ impl Session {
         let url_lit = serde_json::to_string(&final_url)?;
         let _ = self.eval(&format!("__setLocation({url_lit})"));
 
-        // Phase 5: optionally execute inline page scripts.
+        // Phase 5: optionally execute page scripts (inline + external src).
         let scripts = if exec_scripts && (200..400).contains(&status) {
-            let inline = collect_inline_scripts(&tree);
-            let total = inline.len();
-            let mut errors: Vec<String> = Vec::new();
-            for script in inline {
-                // Use eval_void: page scripts often end with an expression
-                // that returns a DOM Element (circular refs break JSON.stringify).
-                if let Err(e) = self.eval_void(&script) {
-                    let msg = e.to_string();
-                    // Truncate noisy stack-traces — caller doesn't need 5KB per error.
-                    if msg.len() > 200 {
-                        errors.push(format!("{}…", &msg[..200]));
-                    } else {
-                        errors.push(msg);
+            let items = collect_scripts(&tree, &final_url);
+            let mut inline_count = 0usize;
+            let mut external_count = 0usize;
+            let mut sources: Vec<String> = Vec::new();
+            let mut fetch_errors: Vec<String> = Vec::new();
+            // Fetch external srcs serially via the same rquest::Client (cookies
+            // + TLS fingerprint stay coherent). Parallelism is a future optimization.
+            for item in items {
+                match item {
+                    ScriptItem::Inline(s) => {
+                        inline_count += 1;
+                        sources.push(s);
                     }
+                    ScriptItem::External(u) => match self.http.get(&u).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            match resp.text().await {
+                                Ok(body) => {
+                                    external_count += 1;
+                                    sources.push(body);
+                                }
+                                Err(e) => fetch_errors.push(format!("read {u}: {e}")),
+                            }
+                        }
+                        Ok(resp) => {
+                            fetch_errors.push(format!("status {} fetching {}", resp.status(), u))
+                        }
+                        Err(e) => fetch_errors.push(format!("fetch {u}: {e}")),
+                    },
                 }
             }
-            // Fire DOMContentLoaded → settle → load → settle. Time budget split.
-            let _ = self.eval("typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()");
+            // Eval all in document order. Page scripts often end with an
+            // Element-returning expression (circular refs → JSON.stringify
+            // throws), so use eval_void.
+            let mut eval_errors: Vec<String> = Vec::new();
+            let mut executed: usize = 0;
+            for source in &sources {
+                if let Err(e) = self.eval_void(source) {
+                    let msg = e.to_string();
+                    if msg.len() > 200 {
+                        eval_errors.push(format!("{}…", &msg[..200]));
+                    } else {
+                        eval_errors.push(msg);
+                    }
+                } else {
+                    executed += 1;
+                }
+            }
+            // Fire DOMContentLoaded → settle → load → settle.
+            let _ = self.eval(
+                "typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()",
+            );
             let after_dcl = self.settle(2000, 100).await.ok();
             let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
             let after_load = self.settle(1500, 50).await.ok();
             Some(json!({
-                "executed": total,
-                "errors_count": errors.len(),
-                "errors": errors.into_iter().take(10).collect::<Vec<_>>(),
+                "inline_count": inline_count,
+                "external_count": external_count,
+                "executed": executed,
+                "errors_count": eval_errors.len(),
+                "errors": eval_errors.into_iter().take(10).collect::<Vec<_>>(),
+                "fetch_errors_count": fetch_errors.len(),
+                "fetch_errors": fetch_errors.into_iter().take(10).collect::<Vec<_>>(),
                 "settle_after_dcl": after_dcl,
                 "settle_after_load": after_load,
             }))
@@ -1099,39 +1136,51 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
     })
 }
 
-// Walk the parsed HTML tree (Value form, output of parse_html_to_tree) and
-// collect inline JavaScript content from <script> elements. Skips:
-//   - <script src="..."> (external scripts; v2 will fetch + exec these)
+// One <script> element from a parsed page — either an inline body or an
+// external src= URL (resolved against the page URL).
+enum ScriptItem {
+    Inline(String),
+    External(String),
+}
+
+// Walk the parsed HTML tree and collect <script> elements in document order.
+// Skips:
 //   - <script type="application/json"> (data, not code — accessible via eval)
 //   - <script type="application/ld+json"> (structured data)
 //   - any non-empty `type` other than text/javascript or module
-// Returns scripts in document order.
-fn collect_inline_scripts(tree: &Value) -> Vec<String> {
+// External srcs resolved against `base_url`; ones that fail to resolve are dropped.
+fn collect_scripts(tree: &Value, base_url: &str) -> Vec<ScriptItem> {
     let mut out = Vec::new();
-    fn walk(node: &Value, out: &mut Vec<String>) {
-        let Some(obj) = node.as_object() else {
-            return;
-        };
-        let is_element = obj
-            .get("type")
-            .and_then(|t| t.as_str())
-            .map(|t| t == "element")
-            .unwrap_or(false);
-        let tag = obj.get("tag").and_then(|t| t.as_str()).unwrap_or("");
-        if is_element && tag == "script" {
-            let attrs = obj.get("attrs").and_then(|a| a.as_object());
-            let has_src = attrs.map(|a| a.contains_key("src")).unwrap_or(false);
-            let ty = attrs
-                .and_then(|a| a.get("type"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let is_js = ty.is_empty()
-                || ty.eq_ignore_ascii_case("module")
-                || ty.to_ascii_lowercase().contains("javascript");
-            if is_js
-                && !has_src
-                && let Some(children) = obj.get("children").and_then(|c| c.as_array())
-            {
+    let base = url::Url::parse(base_url).ok();
+    walk_for_scripts(tree, base.as_ref(), &mut out);
+    out
+}
+
+fn walk_for_scripts(node: &Value, base: Option<&url::Url>, out: &mut Vec<ScriptItem>) {
+    let Some(obj) = node.as_object() else {
+        return;
+    };
+    let is_element = obj.get("type").and_then(|t| t.as_str()) == Some("element");
+    let tag = obj.get("tag").and_then(|t| t.as_str()).unwrap_or("");
+    if is_element && tag == "script" {
+        let attrs = obj.get("attrs").and_then(|a| a.as_object());
+        let src = attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str());
+        let ty = attrs
+            .and_then(|a| a.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let is_js = ty.is_empty()
+            || ty.eq_ignore_ascii_case("module")
+            || ty.to_ascii_lowercase().contains("javascript");
+        if is_js {
+            if let Some(src_url) = src {
+                if !src_url.is_empty()
+                    && let Some(b) = base
+                    && let Ok(resolved) = b.join(src_url)
+                {
+                    out.push(ScriptItem::External(resolved.to_string()));
+                }
+            } else if let Some(children) = obj.get("children").and_then(|c| c.as_array()) {
                 let mut content = String::new();
                 for child in children {
                     if let Some(cobj) = child.as_object()
@@ -1142,18 +1191,16 @@ fn collect_inline_scripts(tree: &Value) -> Vec<String> {
                     }
                 }
                 if !content.trim().is_empty() {
-                    out.push(content);
+                    out.push(ScriptItem::Inline(content));
                 }
             }
         }
-        if let Some(children) = obj.get("children").and_then(|c| c.as_array()) {
-            for child in children {
-                walk(child, out);
-            }
+    }
+    if let Some(children) = obj.get("children").and_then(|c| c.as_array()) {
+        for child in children {
+            walk_for_scripts(child, base, out);
         }
     }
-    walk(tree, &mut out);
-    out
 }
 
 fn parse_html_to_tree(html: &str) -> Value {
