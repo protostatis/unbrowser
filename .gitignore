@@ -24,5 +24,7 @@
 /python/build/
 /python/*.egg-info/
 /python/unbrowser/__pycache__/
+/scripts/__pycache__/
+**/*.pyc
 /python/unbrowser/_bin/*
 !/python/unbrowser/_bin/.gitkeep
