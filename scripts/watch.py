@@ -1,4 +1,4 @@
-"""watch.py — pretty-print the unbrowse NDJSON event stream.
+"""watch.py — pretty-print the unbrowser NDJSON event stream.
 
 The binary emits one JSON event per line on stderr. This reads them and
 renders a color-coded summary so a developer or operator can see at a
@@ -8,7 +8,7 @@ script executions — without parsing raw JSON.
 Usage:
 
     # Pipe a session's stderr through the watcher
-    /path/to/unbrowse 2> >(python3 scripts/watch.py)
+    /path/to/unbrowser 2> >(python3 scripts/watch.py)
 
     # Or tail an existing log
     cat session.log | python3 scripts/watch.py

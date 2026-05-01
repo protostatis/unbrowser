@@ -52,14 +52,16 @@ jobs:
             echo '{"id":1,"method":"eval","params":{"code":"1+2"}}'
             echo '{"id":2,"method":"eval","params":{"code":"({hello: \"world\"})"}}'
             echo '{"id":3,"method":"close"}'
-          } | ./target/release/unbrowse > /tmp/smoke.out
+          } | ./target/release/unbrowser > /tmp/smoke.out
           cat /tmp/smoke.out
           grep -q '"result":3'                          /tmp/smoke.out
           grep -q '"result":{"hello":"world"}'          /tmp/smoke.out
           grep -q '"result":"bye"'                      /tmp/smoke.out
           echo "smoke test passed"
 
-      - name: Python syntax check (router + client)
+      - name: Python syntax check (router + client + helpers)
         run: |
           python3 -m py_compile scripts/router.py
-          python3 -m py_compile scripts/unbrowse.py
+          python3 -m py_compile scripts/fp_check.py
+          python3 -m py_compile scripts/watch.py
+          python3 -m py_compile python/unbrowser/__init__.py

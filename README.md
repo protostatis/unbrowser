@@ -1,4 +1,4 @@
-# unbrowse
+# unbrowser
 
 **Web access for LLM agents. One static binary. No Chrome.**
 
@@ -6,25 +6,25 @@
 
 ```bash
 # macOS Apple Silicon
-curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-aarch64-apple-darwin.tar.gz | tar xz
 
 # macOS Intel
-curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-x86_64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-apple-darwin.tar.gz | tar xz
 
 # Linux x86_64
-curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-x86_64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-unknown-linux-gnu.tar.gz | tar xz
 ```
 
 ### Or build from source
 
 ```bash
-cargo build --release   # binary at ./target/release/unbrowse
+cargo build --release   # binary at ./target/release/unbrowser
 ```
 
 ### Use it
 
 ```bash
-echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' | ./unbrowse
+echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' | ./unbrowser
 ```
 
 That's the install. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.
@@ -55,7 +55,7 @@ This isn't a Chrome wrapper that an agent uses through a Puppeteer-shaped abstra
 - **Stable element refs** (`e:142`) — query, click, type, submit using opaque handles. The LLM never has to scrape the DOM itself.
 - **`challenge` field on every blocked navigate** — provider, confidence, and the exact clearance cookie name. The agent reacts intelligently instead of guessing.
 - **`density.likely_js_filled` heuristic** — distinguishes "real SSR page" from "SSR shell with JS-filled cells" (the CNBC trap). The agent bails before burning round-trips on a page it can't read.
-- **MCP-native** — `unbrowse --mcp` exposes 12 tools to any MCP host (Claude Code, Claude Desktop, Cursor, Cline). 4 lines of config, zero glue code.
+- **MCP-native** — `unbrowser --mcp` exposes 12 tools to any MCP host (Claude Code, Claude Desktop, Cursor, Cline). 4 lines of config, zero glue code.
 - **Real Chrome fingerprint** (Chrome 131 JA4 + Akamai H2 hash) so sites don't block you for being a script.
 
 For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the binary detects them and accepts cookies via `cookies_set` — so you solve once in Chrome and replay forever here.
@@ -64,7 +64,7 @@ For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the b
 
 ```python
 import subprocess, json
-p = subprocess.Popen(["./target/release/unbrowse"],
+p = subprocess.Popen(["./target/release/unbrowser"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
 i = 0
 def call(method, **params):
@@ -90,7 +90,7 @@ Empirical, not aspirational. Latest matrix: **28/30** on tested categories.
 | **SSR + light hydration** (Next.js docs, marketing pages, react.dev's *static* content) | ✅ usable | reads SSR'd content fine; hydration adds nothing but doesn't break either |
 | **Bot-walled with cookie handoff** (Zillow, Cloudflare-protected sites) | ✅ via `cookies_set` | solve once in Chrome, replay forever; `challenge.provider` field tells the agent which vendor |
 | **Module-loader SPAs** (Ember, AMD apps like crates.io) | ⚠️ partial with `exec_scripts: true` | bundles fetch + execute, modules register, but framework auto-mount needs case-by-case shimming |
-| **Heavy React/Vue bundles** (react.dev runtime, large dashboard apps) | ⚠️ bounded — won't hang, won't render | with `exec_scripts: true` the navigate completes inside the 30s wall-clock budget (5s for the script-eval phase, the rest for settle); rendered DOM may not materialize. Tune via `UNBROWSE_TIMEOUT_MS` |
+| **Heavy React/Vue bundles** (react.dev runtime, large dashboard apps) | ⚠️ bounded — won't hang, won't render | with `exec_scripts: true` the navigate completes inside the 30s wall-clock budget (5s for the script-eval phase, the rest for settle); rendered DOM may not materialize. Tune via `UNBROWSER_TIMEOUT_MS` |
 | **Apps requiring Workers / Canvas / IndexedDB / WebGL** | ❌ out of scope by design | use the cookie-handoff path with real Chrome via [unchainedsky.com](https://unchainedsky.com) |
 | **Hardest-tier anti-bot** (PerimeterX with behavioral, Kasada, Akamai BMP advanced) | ❌ even cookie handoff is fragile | managed service is the right tier |
 
@@ -138,7 +138,7 @@ Every navigate's `blockmap.density` field signals SPA-ness so agents bail before
 ### MCP (no glue)
 
 ```json
-{"mcpServers":{"unchained":{"command":"unbrowse","args":["--mcp"]}}}
+{"mcpServers":{"unchained":{"command":"unbrowser","args":["--mcp"]}}}
 ```
 
 12 tools auto-discovered by Claude Code, Claude Desktop, Cursor, Cline.
@@ -153,7 +153,7 @@ Every navigate's `blockmap.density` field signals SPA-ness so agents bail before
 from scripts.router import Router, RouterConfig, cached_cookies_solver
 
 with Router(RouterConfig(
-    binary="./target/release/unbrowse",
+    binary="./target/release/unbrowser",
     chrome_solver=cached_cookies_solver("cookies.json"),
 )) as r:
     r.navigate("https://www.zillow.com/homes/for_rent/")  # auto-handles 403 + cookie replay
@@ -164,7 +164,7 @@ with Router(RouterConfig(
 The binary emits NDJSON events (`ready`, `navigate`, `challenge`) on stderr. Pipe them through `watch.py` for color-coded one-liners:
 
 ```bash
-unbrowse 2> >(python3 scripts/watch.py)
+unbrowser 2> >(python3 scripts/watch.py)
 ```
 
 ## RPC methods
@@ -201,7 +201,7 @@ The vocabulary is the same. Code written against this binary works against the h
 ## Honest limits
 
 - **Script execution is opt-in via `exec_scripts: true`.** Default navigate skips it (the SSR/static path is what most agents want). With it on, inline + external `<script>` tags run in QuickJS — works for many SPAs, but heavy framework bootstraps (Ember, big React) often don't auto-mount because shims can't fake every browser-specific signal. The blockmap's `density.likely_js_filled` flag tells agents in one call when to escalate instead of burning round-trips.
-- **All eval is wall-clock bounded.** A 30s watchdog (configurable via `UNBROWSE_TIMEOUT_MS`, clamped to 1s..10min) covers script execution AND every subsequent settle/microtask/timer callback, so a hostile site can never wedge the binary or strand a CPU-pegged orphan process.
+- **All eval is wall-clock bounded.** A 30s watchdog (configurable via `UNBROWSER_TIMEOUT_MS`, clamped to 1s..10min) covers script execution AND every subsequent settle/microtask/timer callback, so a hostile site can never wedge the binary or strand a CPU-pegged orphan process.
 - **GET-only form submit.** POST/multipart errors out — construct the request manually via `eval` or escalate.
 - **Hardest-tier bot detection** (PerimeterX with behavioral telemetry, advanced Akamai BMP, Kasada) needs the cookie-handoff path. The binary detects and labels the challenge for you, but solving it requires real Chrome (or a token vendor).
 - **No screenshots.** Out of scope by design.

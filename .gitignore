@@ -18,6 +18,6 @@
 /python/dist/
 /python/build/
 /python/*.egg-info/
-/python/unbrowse/__pycache__/
-/python/unbrowse/_bin/*
-!/python/unbrowse/_bin/.gitkeep
+/python/unbrowser/__pycache__/
+/python/unbrowser/_bin/*
+!/python/unbrowser/_bin/.gitkeep

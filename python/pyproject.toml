@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "unbrowse"
+name = "unbrowser"
 version = "0.0.1"
 description = "Web access for LLM agents. One static binary. No Chrome."
 readme = "README.md"
@@ -28,17 +28,17 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/protostatis/unbrowse"
-Repository = "https://github.com/protostatis/unbrowse"
-Issues = "https://github.com/protostatis/unbrowse/issues"
+Homepage = "https://github.com/protostatis/unbrowser"
+Repository = "https://github.com/protostatis/unbrowser"
+Issues = "https://github.com/protostatis/unbrowser/issues"
 
-# The wheel ships the platform-specific native binary inside unbrowse/_bin/.
+# The wheel ships the platform-specific native binary inside unbrowser/_bin/.
 # CI builds the binary first (cargo build --release for each target), copies
-# it into unbrowse/_bin/, then runs `python -m build --wheel` to produce a
+# it into unbrowser/_bin/, then runs `python -m build --wheel` to produce a
 # platform-tagged wheel. The sdist intentionally excludes _bin/ — a source
 # distribution should be platform-neutral.
 [tool.hatch.build.targets.wheel]
-packages = ["unbrowse"]
+packages = ["unbrowser"]
 # pure-python = false flips the wheel from py3-none-any to a platform-tagged
 # wheel based on the host (macosx_*, linux_*, etc.). CI cross-compiles by
 # post-processing the wheel name via `wheel tags --platform <target>`.
@@ -49,5 +49,5 @@ pure-python = false
 allow-direct-references = true
 
 [tool.hatch.build.targets.sdist]
-include = ["unbrowse/", "README.md", "LICENSE"]
-exclude = ["unbrowse/_bin/"]
+include = ["unbrowser/", "README.md", "LICENSE"]
+exclude = ["unbrowser/_bin/"]

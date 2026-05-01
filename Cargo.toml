@@ -1,10 +1,10 @@
 [package]
-name = "unbrowse"
+name = "unbrowser"
 version = "0.0.1"
 edition = "2024"
 description = "Web access for LLM agents. One static binary. No Chrome."
 license = "Apache-2.0"
-repository = "https://github.com/protostatis/unbrowse"
+repository = "https://github.com/protostatis/unbrowser"
 
 [dependencies]
 anyhow = "1"

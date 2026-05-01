@@ -1,9 +1,9 @@
-"""unbrowse — Python client for the unbrowse binary.
+"""unbrowser — Python client for the unbrowser binary.
 
-`pip install unbrowse` ships the native binary inside the wheel for your
+`pip install unbrowser` ships the native binary inside the wheel for your
 platform — there's nothing else to install. Use it like:
 
-    from unbrowse import Client
+    from unbrowser import Client
 
     with Client() as ub:
         r = ub.navigate("https://news.ycombinator.com")
@@ -12,7 +12,7 @@ platform — there's nothing else to install. Use it like:
 
 For the `extract` / auto-strategy command, watchdog-bounded `exec_scripts`,
 the cookie handoff for bot-walled sites, and the BlockMap shape: see the
-project README at https://github.com/protostatis/unbrowse.
+project README at https://github.com/protostatis/unbrowser.
 """
 
 from __future__ import annotations
@@ -29,35 +29,35 @@ from urllib.parse import quote_plus, urljoin, urlparse
 
 __version__ = "0.0.1"
 
-__all__ = ["Client", "UnbrowseError", "find_binary", "navigate", "__version__"]
+__all__ = ["Client", "UnbrowserError", "find_binary", "navigate", "__version__"]
 
 
-class UnbrowseError(Exception):
+class UnbrowserError(Exception):
     """Raised when the binary returns a JSON-RPC error or can't be spawned."""
 
 
 def find_binary() -> str:
-    """Resolve the unbrowse binary path.
+    """Resolve the unbrowser binary path.
 
     Resolution order, most-explicit first:
 
-      1. ``UNBROWSE_BIN`` env var (overrides everything; right escape hatch
+      1. ``UNBROWSER_BIN`` env var (overrides everything; right escape hatch
          for testing a one-off build or vendored copy).
       2. Bundled binary inside this package (the wheel ships one for your
          platform — this is what end users hit).
-      3. ``unbrowse`` on ``$PATH`` (covers ``cargo install`` / ``brew install``
+      3. ``unbrowser`` on ``$PATH`` (covers ``cargo install`` / ``brew install``
          users who didn't install the wheel).
-      4. The local debug build at ``target/debug/unbrowse`` relative to the
+      4. The local debug build at ``target/debug/unbrowser`` relative to the
          repo root (developer convenience — only fires when running from a
          checkout without an installed wheel).
 
-    Raises UnbrowseError with a helpful message if none of the above resolve.
+    Raises UnbrowserError with a helpful message if none of the above resolve.
     """
-    env = os.environ.get("UNBROWSE_BIN")
+    env = os.environ.get("UNBROWSER_BIN")
     if env:
         if not Path(env).is_file():
-            raise UnbrowseError(
-                f"UNBROWSE_BIN points to {env!r}, which doesn't exist"
+            raise UnbrowserError(
+                f"UNBROWSER_BIN points to {env!r}, which doesn't exist"
             )
         return env
 
@@ -65,30 +65,30 @@ def find_binary() -> str:
     if bundled.is_file():
         return str(bundled)
 
-    on_path = shutil.which("unbrowse")
+    on_path = shutil.which("unbrowser")
     if on_path:
         return on_path
 
-    # Dev fallback: target/debug/unbrowse two dirs up from this file
-    # (python/unbrowse/__init__.py -> python/unbrowse -> python -> repo root).
-    dev = Path(__file__).resolve().parents[2] / "target" / "debug" / "unbrowse"
+    # Dev fallback: target/debug/unbrowser two dirs up from this file
+    # (python/unbrowser/__init__.py -> python/unbrowser -> python -> repo root).
+    dev = Path(__file__).resolve().parents[2] / "target" / "debug" / "unbrowser"
     if dev.is_file():
         return str(dev)
 
-    raise UnbrowseError(
-        "Could not locate the unbrowse binary. Tried: $UNBROWSE_BIN, "
-        "package-bundled binary, $PATH, target/debug/unbrowse. "
-        "Install via `pip install unbrowse` (ships the binary), "
-        "`cargo install unbrowse`, or `brew install unbrowse`."
+    raise UnbrowserError(
+        "Could not locate the unbrowser binary. Tried: $UNBROWSER_BIN, "
+        "package-bundled binary, $PATH, target/debug/unbrowser. "
+        "Install via `pip install unbrowser` (ships the binary), "
+        "`cargo install unbrowser`, or `brew install unbrowser`."
     )
 
 
 def _binary_name() -> str:
-    return "unbrowse.exe" if sys.platform == "win32" else "unbrowse"
+    return "unbrowser.exe" if sys.platform == "win32" else "unbrowser"
 
 
 class Client:
-    """Synchronous JSON-RPC client for the unbrowse binary.
+    """Synchronous JSON-RPC client for the unbrowser binary.
 
     One subprocess per Client. The session (cookies, last_url, last_body)
     persists across calls until close().
@@ -119,7 +119,7 @@ class Client:
     # ---- core RPC --------------------------------------------------------
 
     def call(self, method: str, **params) -> Any:
-        """Send one JSON-RPC request, return the result. Raises UnbrowseError on RPC error."""
+        """Send one JSON-RPC request, return the result. Raises UnbrowserError on RPC error."""
         self._next_id += 1
         req = {"id": self._next_id, "method": method, "params": params}
         assert self._proc.stdin is not None and self._proc.stdout is not None
@@ -127,10 +127,10 @@ class Client:
         self._proc.stdin.flush()
         line = self._proc.stdout.readline()
         if not line:
-            raise UnbrowseError(f"binary closed stdout while waiting for {method}")
+            raise UnbrowserError(f"binary closed stdout while waiting for {method}")
         resp = json.loads(line)
         if "error" in resp:
-            raise UnbrowseError(f"{method}: {resp['error']}")
+            raise UnbrowserError(f"{method}: {resp['error']}")
         return resp.get("result")
 
     # ---- typed wrappers (don't add behavior; just discoverability) -------
@@ -201,7 +201,7 @@ class Client:
         elif engine == "bing":
             url = "https://www.bing.com/search?q=" + quote_plus(query)
         else:
-            raise UnbrowseError(
+            raise UnbrowserError(
                 f"unknown search engine '{engine}'. Supported: ddg, bing. "
                 "Google is intentionally unsupported via the cheap path."
             )
@@ -215,15 +215,15 @@ class Client:
         it's returned unchanged — preventing the double-prefix class of bug
         you get from naive ``current_url + href`` concatenation.
 
-        Raises UnbrowseError if no page has been navigated yet.
+        Raises UnbrowserError if no page has been navigated yet.
         """
         if not href:
-            raise UnbrowseError("empty href")
+            raise UnbrowserError("empty href")
         parsed = urlparse(href)
         if parsed.scheme and parsed.netloc:
             return href
         if not self._last_url:
-            raise UnbrowseError("no current page — call navigate first")
+            raise UnbrowserError("no current page — call navigate first")
         return urljoin(self._last_url, href)
 
     def blockmap(self) -> dict:
@@ -285,7 +285,7 @@ class Client:
         self._closed = True
         try:
             self.call("close")
-        except (UnbrowseError, BrokenPipeError, OSError):
+        except (UnbrowserError, BrokenPipeError, OSError):
             pass
         self._reap()
 

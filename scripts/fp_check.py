@@ -18,8 +18,8 @@ import subprocess
 import sys
 
 BIN = os.environ.get(
-    "UNBROWSE_BIN",
-    "~/Projects/unchained_browser/target/debug/unbrowse",
+    "UNBROWSER_BIN",
+    "~/Projects/unchained_browser/target/debug/unbrowser",
 )
 
 # Loose Chrome family checks. JA3/JA4 hashes drift across releases — we
@@ -32,7 +32,7 @@ CHROME_SIGNALS = {
 }
 
 
-def navigate_via_unbrowse(url: str, profile: str | None) -> dict:
+def navigate_via_unbrowser(url: str, profile: str | None) -> dict:
     args = [BIN]
     if profile:
         args += ["--profile", profile]
@@ -67,7 +67,7 @@ def navigate_via_unbrowse(url: str, profile: str | None) -> dict:
 def check_one(profile: str | None) -> bool:
     label = profile or "default"
     print(f"--- profile: {label} ---")
-    out = navigate_via_unbrowse("https://tls.peet.ws/api/all", profile)
+    out = navigate_via_unbrowser("https://tls.peet.ws/api/all", profile)
     nav = out["navigate"].get("result")
     if not nav:
         print(f"  navigate failed: {out['navigate'].get('error')}")

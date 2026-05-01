@@ -77,27 +77,27 @@ jobs:
             echo "skip: cross-compiled binary, host can't run it"
             exit 0
           fi
-          echo '{"id":1,"method":"close"}' | ./target/${{ matrix.target }}/release/unbrowse > /tmp/out
+          echo '{"id":1,"method":"close"}' | ./target/${{ matrix.target }}/release/unbrowser > /tmp/out
           cat /tmp/out
           grep -q '"result":"bye"' /tmp/out
 
       - name: Package archive
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../unbrowse-${{ matrix.target }}.tar.gz unbrowse
+          tar -czf ../../../unbrowser-${{ matrix.target }}.tar.gz unbrowser
 
       - name: Compute checksum
         run: |
-          shasum -a 256 unbrowse-${{ matrix.target }}.tar.gz > unbrowse-${{ matrix.target }}.tar.gz.sha256
-          cat unbrowse-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 unbrowser-${{ matrix.target }}.tar.gz > unbrowser-${{ matrix.target }}.tar.gz.sha256
+          cat unbrowser-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unbrowse-${{ matrix.target }}
+          name: unbrowser-${{ matrix.target }}
           path: |
-            unbrowse-${{ matrix.target }}.tar.gz
-            unbrowse-${{ matrix.target }}.tar.gz.sha256
+            unbrowser-${{ matrix.target }}.tar.gz
+            unbrowser-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -113,7 +113,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: unbrowse-*
+          pattern: unbrowser-*
           merge-multiple: true
 
       - name: List artifacts
@@ -124,8 +124,8 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
-            unbrowse-*.tar.gz
-            unbrowse-*.tar.gz.sha256
+            unbrowser-*.tar.gz
+            unbrowser-*.tar.gz.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
@@ -135,22 +135,22 @@ jobs:
 
             | Platform | Asset |
             |---|---|
-            | macOS Apple Silicon | `unbrowse-aarch64-apple-darwin.tar.gz` |
-            | macOS Intel | `unbrowse-x86_64-apple-darwin.tar.gz` |
-            | Linux x86_64 (glibc) | `unbrowse-x86_64-unknown-linux-gnu.tar.gz` |
+            | macOS Apple Silicon | `unbrowser-aarch64-apple-darwin.tar.gz` |
+            | macOS Intel | `unbrowser-x86_64-apple-darwin.tar.gz` |
+            | Linux x86_64 (glibc) | `unbrowser-x86_64-unknown-linux-gnu.tar.gz` |
 
             ### One-liner (macOS / Linux):
 
             ```bash
-            curl -L https://github.com/protostatis/unbrowse/releases/download/${{ github.ref_name }}/unbrowse-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/darwin/apple-darwin/;s/linux/unknown-linux-gnu/').tar.gz \
+            curl -L https://github.com/protostatis/unbrowser/releases/download/${{ github.ref_name }}/unbrowser-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/darwin/apple-darwin/;s/linux/unknown-linux-gnu/').tar.gz \
               | tar xz -C /usr/local/bin
-            unbrowse --mcp
+            unbrowser --mcp
             ```
 
             ### Verify checksums:
 
             ```bash
-            shasum -a 256 -c unbrowse-*.tar.gz.sha256
+            shasum -a 256 -c unbrowser-*.tar.gz.sha256
             ```
 
             ## What's new

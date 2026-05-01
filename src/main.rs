@@ -210,7 +210,7 @@ fn spawn_fetch_worker(http: rquest::Client) -> FetchQueue {
     let results_for_thread = results.clone();
 
     std::thread::Builder::new()
-        .name("unbrowse-fetch".to_string())
+        .name("unbrowser-fetch".to_string())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1499,7 +1499,7 @@ async fn main() -> Result<()> {
     }
 }
 
-// `--profile <name>` or `--profile=<name>`. Falls back to UNBROWSE_PROFILE
+// `--profile <name>` or `--profile=<name>`. Falls back to UNBROWSER_PROFILE
 // env var, then the built-in default.
 fn parse_profile_arg(args: &[String]) -> String {
     for (i, a) in args.iter().enumerate() {
@@ -1511,16 +1511,16 @@ fn parse_profile_arg(args: &[String]) -> String {
             return rest.to_string();
         }
     }
-    std::env::var("UNBROWSE_PROFILE").unwrap_or_else(|_| profile::DEFAULT_PROFILE.to_string())
+    std::env::var("UNBROWSER_PROFILE").unwrap_or_else(|_| profile::DEFAULT_PROFILE.to_string())
 }
 
 // Per-RPC wall-clock budget for JS eval. Default 30s — fits the watchdog
 // design rationale (script phase tightens to 5s, settle gets the remainder).
-// Sites with legitimately slow SSR/hydration can set UNBROWSE_TIMEOUT_MS
+// Sites with legitimately slow SSR/hydration can set UNBROWSER_TIMEOUT_MS
 // higher; clamped to [1000, 600_000] (1s..10min) to keep silly values from
 // re-introducing the orphan-leak class of bug.
 fn read_dispatch_budget_ms() -> u64 {
-    std::env::var("UNBROWSE_TIMEOUT_MS")
+    std::env::var("UNBROWSER_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(|v| v.clamp(1_000, 600_000))
@@ -1565,7 +1565,7 @@ async fn rpc_main(profile: Profile) -> Result<()> {
         // the deadline passes. Without this, exec_scripts=true on hostile
         // SPAs left CPU-pegged orphan processes behind. Restore on the way
         // out so back-to-back calls each get a fresh budget. Default 30s,
-        // tunable via UNBROWSE_TIMEOUT_MS for legit-but-slow sites.
+        // tunable via UNBROWSER_TIMEOUT_MS for legit-but-slow sites.
         let prev_dispatch_deadline = session.set_eval_deadline_from_now(dispatch_budget_ms);
         let resp = match req.method.as_str() {
             "eval" => {
@@ -1995,7 +1995,7 @@ async fn mcp_main(profile: Profile) -> Result<()> {
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": {} },
                 "serverInfo": {
-                    "name": "unbrowse",
+                    "name": "unbrowser",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             })),

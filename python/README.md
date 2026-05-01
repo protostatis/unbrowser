@@ -1,11 +1,11 @@
-# unbrowse
+# unbrowser
 
 **Web access for LLM agents. One static binary. No Chrome.**
 
 Single-file native headless browser optimized for LLM agents. Runs JavaScript via QuickJS, returns a low-token page summary on every navigate, and gives you stable element refs for click/type/submit. Tens of MB RAM per session, no Chrome dependency.
 
 ```bash
-pip install unbrowse
+pip install unbrowser
 ```
 
 The wheel ships the native binary for your platform — there's nothing else to install.
@@ -13,7 +13,7 @@ The wheel ships the native binary for your platform — there's nothing else to 
 ## Quick start
 
 ```python
-from unbrowse import Client
+from unbrowser import Client
 
 with Client() as ub:
     r = ub.navigate("https://news.ycombinator.com")
@@ -40,7 +40,7 @@ with Client() as ub:
 - **`click(ref)` / `type(ref, text)` / `submit(ref)`** — interaction. POST and GET forms supported. Checkboxes/radios tracked.
 - **`cookies_set(...)`** — paste cookies from a real Chrome session to bypass bot detection (Cloudflare, PerimeterX, Datadome). Solve once, replay forever.
 
-Full RPC reference, BlockMap shape, challenge detection, profile system, and architecture: [github.com/protostatis/unbrowse](https://github.com/protostatis/unbrowse).
+Full RPC reference, BlockMap shape, challenge detection, profile system, and architecture: [github.com/protostatis/unbrowser](https://github.com/protostatis/unbrowser).
 
 ## Honest limits
 
