@@ -12,3 +12,12 @@
 # Local-only artifacts
 *.log
 /tmp/
+
+# Python package build artifacts (the binary lands in _bin/ at CI time
+# only — we never want it in git; the .gitkeep placeholder is preserved)
+/python/dist/
+/python/build/
+/python/*.egg-info/
+/python/unbrowse/__pycache__/
+/python/unbrowse/_bin/*
+!/python/unbrowse/_bin/.gitkeep

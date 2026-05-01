@@ -1,210 +1,37 @@
-"""unbrowse.py — minimal Python client for the unbrowse binary.
+"""scripts/unbrowse.py — backward-compat shim.
 
-Usage:
+The real implementation lives in ``python/unbrowse/__init__.py`` (the
+PyPI-publishable package). This file exists so the SKILL.md pattern and
+existing dev scripts keep working without `pip install`:
 
+    sys.path.insert(0, "/path/to/repo/scripts")
     from unbrowse import Client
 
-    with Client() as ub:
-        r = ub.navigate("https://news.ycombinator.com")
-        for s in ub.query(".titleline > a")[:3]:
-            print(s["text"], s["attrs"]["href"])
-
-That's it. No subprocess boilerplate to rewrite.
-
-For auto-escalation on bot-walled sites (cookie handoff to real Chrome),
-use `Router` from router.py instead — same shape but with a pluggable
-chrome_solver callback.
+It's a thin re-export — no client logic lives here.
 """
 
 from __future__ import annotations
 
-import atexit
-import json
-import os
-import subprocess
-from typing import Any
+import sys
+from pathlib import Path
 
+_PKG_DIR = Path(__file__).resolve().parent.parent / "python"
+if str(_PKG_DIR) not in sys.path:
+    sys.path.insert(0, str(_PKG_DIR))
 
-_DEFAULT_BIN = os.environ.get(
-    "UNBROWSE_BIN",
-    "/Users/zhiminzou/Projects/unchained_browser/target/debug/unbrowse",
+# Python has already registered us as 'unbrowse' in sys.modules to run this
+# code. If we don't pop the entry, the next `from unbrowse import ...`
+# would short-circuit back to this half-loaded module instead of finding
+# the real package on the path we just added. After the import lands, the
+# package re-registers itself under the same name — caller is none the
+# wiser.
+sys.modules.pop("unbrowse", None)
+from unbrowse import (  # noqa: E402  -- intentional: shim must run path setup before import
+    Client,
+    UnbrowseError,
+    __version__,
+    find_binary,
+    navigate,
 )
 
-
-class UnbrowseError(Exception):
-    pass
-
-
-class Client:
-    """Synchronous JSON-RPC client for the unbrowse binary.
-
-    One subprocess per Client. The session (cookies, last_url, last_body)
-    persists across calls until close().
-    """
-
-    def __init__(self, binary: str = _DEFAULT_BIN):
-        self._proc = subprocess.Popen(
-            [binary],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-        self._next_id = 0
-        self._closed = False
-        # Belt-and-braces orphan prevention: if the interpreter exits before
-        # __exit__ runs (e.g. an unhandled exception inside the `with`, or a
-        # heredoc-wrapped invocation killed mid-flight), atexit reaps the
-        # subprocess. Closing our stdin gives the binary's reader an EOF so
-        # it self-terminates without needing the close RPC.
-        atexit.register(self._reap)
-
-    # ---- core RPC --------------------------------------------------------
-
-    def call(self, method: str, **params) -> Any:
-        """Send one JSON-RPC request, return the result. Raises UnbrowseError on RPC error."""
-        self._next_id += 1
-        req = {"id": self._next_id, "method": method, "params": params}
-        assert self._proc.stdin is not None and self._proc.stdout is not None
-        self._proc.stdin.write(json.dumps(req) + "\n")
-        self._proc.stdin.flush()
-        line = self._proc.stdout.readline()
-        if not line:
-            raise UnbrowseError(f"binary closed stdout while waiting for {method}")
-        resp = json.loads(line)
-        if "error" in resp:
-            raise UnbrowseError(f"{method}: {resp['error']}")
-        return resp.get("result")
-
-    # ---- typed wrappers (don't add behavior; just discoverability) -------
-
-    def navigate(self, url: str, exec_scripts: bool = False) -> dict:
-        return self.call("navigate", url=url, exec_scripts=exec_scripts)
-
-    def query(self, selector: str) -> list[dict]:
-        return self.call("query", selector=selector)
-
-    def text(self, selector: str = "body") -> str | None:
-        return self.call("text", selector=selector)
-
-    def text_main(self) -> str | None:
-        """textContent of the main content area (excludes header/nav/footer/aside)."""
-        return self.call("text_main")
-
-    def query_text(self, text: str, selector: str | None = None,
-                   exact: bool = False, limit: int = 20) -> list[dict]:
-        """Find elements by visible text content (chrome-stripped, deepest match).
-
-        Use when CSS selectors are unstable (React-rendered pages) but the
-        visible label is reliable, e.g. r.query_text('Sign in')[0].
-        """
-        params: dict = {"text": text, "exact": exact, "limit": limit}
-        if selector is not None:
-            params["selector"] = selector
-        return self.call("query_text", **params)
-
-    def click(self, ref: str) -> dict:
-        return self.call("click", ref=ref)
-
-    def type(self, ref: str, text: str) -> dict:
-        return self.call("type", ref=ref, text=text)
-
-    def submit(self, ref: str) -> dict:
-        return self.call("submit", ref=ref)
-
-    def blockmap(self) -> dict:
-        return self.call("blockmap")
-
-    def extract(self, strategy: str | None = None) -> dict:
-        """Auto-strategy structured-data extraction.
-
-        Tries JSON-LD → __NEXT_DATA__ → Nuxt → OpenGraph/meta → microdata →
-        text_main fallback, returns the highest-confidence hit as
-        {strategy, confidence, data, tried}. Pass strategy='json_ld' (etc.)
-        to force a specific extractor.
-        """
-        if strategy is None:
-            return self.call("extract")
-        return self.call("extract", strategy=strategy)
-
-    def settle(self, max_ms: int = 2000, max_iters: int = 50) -> dict:
-        """Drain the JS event loop: microtasks + setTimeout/setInterval.
-
-        Returns when queue empty, max_ms elapses, or max_iters hit. Result:
-        {iters, elapsed_ms, microtasks_run, timers_fired, pending_timers,
-         pending_microtasks, timed_out}.
-        """
-        return self.call("settle", max_ms=max_ms, max_iters=max_iters)
-
-    def body(self) -> str:
-        return self.call("body")
-
-    def eval(self, code: str) -> Any:
-        return self.call("eval", code=code)
-
-    def cookies_set(self, cookies: list[dict], url: str | None = None) -> dict:
-        if url is None:
-            return self.call("cookies_set", cookies=cookies)
-        return self.call("cookies_set", cookies=cookies, url=url)
-
-    def cookies_get(self) -> list[dict]:
-        return self.call("cookies_get")
-
-    def cookies_clear(self) -> dict:
-        return self.call("cookies_clear")
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self.call("close")
-        except (UnbrowseError, BrokenPipeError, OSError):
-            pass
-        self._reap()
-
-    def _reap(self) -> None:
-        # Idempotent: stdin EOF first (binary's reader returns None and the
-        # RPC loop exits cleanly), then escalate via terminate → kill if it
-        # doesn't respond. Always wait() at the end so we don't leave a
-        # zombie. Called from both close() and atexit.
-        if self._proc.poll() is not None:
-            return
-        try:
-            if self._proc.stdin and not self._proc.stdin.closed:
-                self._proc.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
-        try:
-            self._proc.wait(timeout=2)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        self._proc.terminate()
-        try:
-            self._proc.wait(timeout=2)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        self._proc.kill()
-        try:
-            self._proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
-
-    # ---- context manager -------------------------------------------------
-
-    def __enter__(self) -> "Client":
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-
-# ---- one-liner shortcut for trivial cases --------------------------------
-
-def navigate(url: str) -> dict:
-    """One-shot: fetch a URL and return the navigate result. Closes immediately."""
-    with Client() as ub:
-        return ub.navigate(url)
+__all__ = ["Client", "UnbrowseError", "find_binary", "navigate", "__version__"]

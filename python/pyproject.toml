@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unbrowse"
+version = "0.0.1"
+description = "Web access for LLM agents. One static binary. No Chrome."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "protostatis" }]
+keywords = ["browser", "scraping", "llm", "agent", "headless", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/protostatis/unbrowse"
+Repository = "https://github.com/protostatis/unbrowse"
+Issues = "https://github.com/protostatis/unbrowse/issues"
+
+# The wheel ships the platform-specific native binary inside unbrowse/_bin/.
+# CI builds the binary first (cargo build --release for each target), copies
+# it into unbrowse/_bin/, then runs `python -m build --wheel` to produce a
+# platform-tagged wheel. The sdist intentionally excludes _bin/ — a source
+# distribution should be platform-neutral.
+[tool.hatch.build.targets.wheel]
+packages = ["unbrowse"]
+# pure-python = false flips the wheel from py3-none-any to a platform-tagged
+# wheel based on the host (macosx_*, linux_*, etc.). CI cross-compiles by
+# post-processing the wheel name via `wheel tags --platform <target>`.
+pure-python = false
+# Suppress hatchling's "did you mean to mark this as platform-specific?"
+# nag — yes, we did, deliberately, for the bundled binary.
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.sdist]
+include = ["unbrowse/", "README.md", "LICENSE"]
+exclude = ["unbrowse/_bin/"]
