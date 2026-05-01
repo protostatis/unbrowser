@@ -93,6 +93,33 @@ for s in call("query", selector=".titleline > a")[:3]:
 
 If most of your pages are static or SSR, this. If most are SPAs, Playwright. If you don't want to run anything, see [unchainedsky.com](https://unchainedsky.com).
 
+## Verified against (working)
+
+Concrete sites where this binary was tested and produced clean structured output. Times measured cold-start to extracted-result.
+
+| Category | Sites | Time |
+|---|---|---|
+| Reference / docs | Wikipedia, MDN, docs.rs, PyPI | 0.9 – 5.8s |
+| News | Hacker News, BBC, TechCrunch, ArXiv listings | 1 – 1.6s |
+| Search | Google `/search`, Bing, Brave, DuckDuckGo (html) | 0.2 – 1.8s |
+| Dev | GitHub repo pages, npm, StackOverflow, HuggingFace model cards | 0.7 – 2.4s |
+| Crypto / finance | CoinGecko | 3.5s |
+| Social | Lobsters, old.reddit.com | 0.9 – 1.4s |
+| Govt / institutional | arXiv, archive.org, gov.uk | 0.6 – 1.0s |
+| Interaction primitives | type, click + auto-follow, cookies_set/get/replay, eval | 0.3 – 1.3s |
+
+**Surprises:** all four major search engines work — Google `/search` returns 200 + 91KB without challenge. CoinGecko's heavy dashboard SSRs enough that quotes come through. HuggingFace model cards expose model name in `<h1>`.
+
+## Doesn't work today
+
+| Category | Sites | Why |
+|---|---|---|
+| SPA shells | crates.io, GitHub issues/PRs list, eBay search, modern reddit.com, DDG main domain | content rendered by JS — needs Phase 4/5 |
+| Bot-walled e-commerce | Amazon (AWS WAF), Yahoo Finance (sad-panda) | use cookie handoff via [unchainedsky.com](https://unchainedsky.com) or local Chrome |
+| Hardest anti-bot tier | PerimeterX with behavioral telemetry, Akamai BMP advanced, Kasada | even cookie handoff is fragile — managed service is the right tier |
+
+The binary surfaces both kinds of failures explicitly — `density.thin_shell` / `density.likely_js_filled` for SPA detection, `challenge.provider` for bot walls — so agents can decide whether to escalate or skip.
+
 ## Three ways agents talk to it
 
 ### MCP (no glue)
