@@ -188,6 +188,10 @@ impl Session {
         let http = rquest::Client::builder()
             .emulation(rquest_util::Emulation::Chrome131)
             .cookie_provider(jar.clone())
+            // .emulation(...) appears to clobber the default redirect policy.
+            // Explicit follow-up-to-10 matches Chrome's behavior on http://github.com,
+            // httpbin.org/redirect/N, and the Yahoo "sad panda" 301 chain.
+            .redirect(rquest::redirect::Policy::limited(10))
             .build()
             .context("rquest client build")?;
         // Install the DOM source: defines document, Element, querySelector, __seedDOM, etc.
@@ -433,10 +437,12 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
     let groups: &[Group] = &[
         ("arkose_labs",                0.98, &["arkoselabs", "funcaptcha"],                                                                       ""),
         ("cloudflare_turnstile",       0.97, &["just a moment", "checking your browser", "cf-challenge", "cf_challenge", "turnstile", "__cf_chl_", "cf-mitigated"], "cf_clearance"),
+        ("aws_waf",                    0.96, &["awswafcookiedomainlist", "gokuprops", "aws-waf-token", "/awswaf/", "challenge.js"],               "aws-waf-token"),
         ("recaptcha",                  0.95, &["g-recaptcha", "google recaptcha", "recaptcha/api2", "i'm not a robot", "im not a robot"],          ""),
         ("perimeterx_block",           0.94, &["px-captcha", "_pxappid", "/_px", "robot or human", "/blocked?url="],                             "_px3"),
         ("datadome",                   0.93, &["datadome", "captcha-delivery"],                                                                   "datadome"),
         ("press_hold",                 0.92, &["press & hold", "press and hold", "press&hold", "hold to confirm"],                                ""),
+        ("yahoo_sad_panda",            0.90, &["sad-panda", "sorry, the page you requested cannot be found", "yahoo.*nytransit"],                 ""),
         ("akamai_bmp",                 0.88, &["_abck=", "bm_sz=", "akamai bot manager"],                                                         "_abck"),
         ("imperva",                    0.85, &["_incapsula", "incident_id"],                                                                      "incap_ses_*"),
         ("generic_human_verification", 0.76, &["verify you are human", "verify that you are human", "unusual traffic", "access to this page has been denied", "automated requests", "sorry, you have been blocked"], ""),
@@ -451,6 +457,28 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
             .collect();
         if !matches.is_empty() && best.as_ref().is_none_or(|(_, c, _, _)| *confidence > *c) {
             best = Some((*vendor, *confidence, *cookie, matches));
+        }
+    }
+
+    // Fallback: tiny-body + status anomaly = soft block from an unknown vendor.
+    // Conservative thresholds so legitimate small 4xx pages on real sites don't trip it:
+    //   - 4xx/5xx OR an unusual 2xx status like 202 (used by AWS WAF)
+    //   - body shorter than 5KB (real error pages are usually fuller)
+    //   - no specific signature already matched
+    if best.is_none() {
+        let anomalous_status = !matches!(status, 200 | 301 | 302 | 304 | 404 | 410)
+            && (status >= 400 || status == 202 || status == 401 || status == 403);
+        if anomalous_status && body.len() < 5000 {
+            return Some(json!({
+                "blocked": true,
+                "provider": "unknown_block",
+                "confidence": 0.55,
+                "status": status,
+                "matched": [],
+                "clearance_cookie": Value::Null,
+                "reason": format!("Tiny body ({} bytes) on anomalous status {} with no known vendor signature — likely a soft block.", body.len(), status),
+                "hint": "Inspect `body` to identify the vendor, escalate to real Chrome to confirm the page renders, or skip this URL.",
+            }));
         }
     }
 

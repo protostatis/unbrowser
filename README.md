@@ -2,10 +2,29 @@
 
 **Web access for LLM agents. One static binary. No Chrome.**
 
+### Install (download)
+
 ```bash
-cargo build --release
-echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' \
-  | ./target/release/unbrowse
+# macOS Apple Silicon
+curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-aarch64-apple-darwin.tar.gz | tar xz
+
+# macOS Intel
+curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-x86_64-apple-darwin.tar.gz | tar xz
+
+# Linux x86_64
+curl -L https://github.com/protostatis/unbrowse/releases/latest/download/unbrowse-x86_64-unknown-linux-gnu.tar.gz | tar xz
+```
+
+### Or build from source
+
+```bash
+cargo build --release   # binary at ./target/release/unbrowse
+```
+
+### Use it
+
+```bash
+echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' | ./unbrowse
 ```
 
 That's the install. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.

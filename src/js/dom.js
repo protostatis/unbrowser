@@ -387,6 +387,28 @@
     this.dispatchEvent(new Event('click', { bubbles: true }));
   };
 
+  // ChildNode mixin — remove(), before(), after(), replaceWith().
+  // Standard DOM (Element + CharacterData inherit from ChildNode). Without
+  // these, idiomatic JS like `el.remove()` throws TypeError, which agents
+  // call frequently when iterating with eval.
+  Element.prototype.remove = function() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  };
+  TextNode.prototype.remove = function() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  };
+  Element.prototype.replaceWith = function() {
+    var parent = this.parentNode;
+    if (!parent) return;
+    var ref = this;
+    for (var i = 0; i < arguments.length; i++) {
+      var node = arguments[i];
+      if (typeof node === 'string') node = document.createTextNode(node);
+      parent.insertBefore(node, ref);
+    }
+    parent.removeChild(this);
+  };
+
   Object.defineProperty(Element.prototype, 'id', {
     get: function() { return this._attributes.id || ''; },
     set: function(v) { this._attributes.id = v; }

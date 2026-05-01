@@ -173,10 +173,26 @@
     function suspicious(d, minTotal) {
       return d != null && d.total >= (minTotal || 20) && d.ratio < 0.4;
     }
+
+    // Thin-shell signal: page is small, structure is empty, no headings, few links.
+    // Catches the crates.io / DDG-main class of SPA where the static HTML is just
+    // a React/Ember root and a script tag. The skill markdown described this
+    // heuristic but it lived in agent prose only — now computed inline so every
+    // caller benefits.
+    var bodyBytes = (document.body && (document.body.textContent || '').length) || 0;
+    // Use a rough proxy for "page bytes" — actual response body length isn't
+    // available JS-side. innerText length is a reasonable lower bound.
+    var thinShell =
+      structure.length < 3 &&
+      headings.length === 0 &&
+      links.length < 30 &&
+      bodyBytes < 4000;
+
     var likelyJsFilled =
       suspicious(tdDensity, 20) ||
       suspicious(liDensity, 30) ||
-      suspicious(tableDensity, 3);   // even a few empty tables is a strong signal
+      suspicious(tableDensity, 3) ||   // even a few empty tables is a strong signal
+      thinShell;                       // SPA shell with no rendered content
 
     // JSON script tags often carry the data the JS rendering would fill in
     // (Next.js __NEXT_DATA__, ld+json, custom application/json blocks).
@@ -215,6 +231,7 @@
         td: tdDensity,
         li: liDensity,
         json_scripts: jsonScripts,
+        thin_shell: thinShell,
         likely_js_filled: likelyJsFilled,
       },
       ascii: ascii.join('\n'),
