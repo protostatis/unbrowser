@@ -43,11 +43,7 @@ struct CookieJar {
 }
 
 impl rquest::cookie::CookieStore for CookieJar {
-    fn set_cookies(
-        &self,
-        url: &url::Url,
-        headers: &mut dyn Iterator<Item = &http::HeaderValue>,
-    ) {
+    fn set_cookies(&self, url: &url::Url, headers: &mut dyn Iterator<Item = &http::HeaderValue>) {
         let parsed: Vec<cookie::Cookie<'static>> = headers
             .filter_map(|h| h.to_str().ok())
             .filter_map(|s| cookie::Cookie::parse(s.to_string()).ok())
@@ -451,10 +447,10 @@ impl Session {
                 .clone()
                 .ok_or_else(|| anyhow!("no current page — call navigate first"));
         }
-        if let Ok(u) = url::Url::parse(href) {
-            if u.has_host() {
-                return Ok(u.to_string());
-            }
+        if let Ok(u) = url::Url::parse(href)
+            && u.has_host()
+        {
+            return Ok(u.to_string());
         }
         let base = self
             .last_url
@@ -502,17 +498,109 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
     // not regex — we don't pull in a regex crate just for this.
     type Group = (&'static str, f64, &'static [&'static str], &'static str);
     let groups: &[Group] = &[
-        ("arkose_labs",                0.98, &["arkoselabs", "funcaptcha"],                                                                       ""),
-        ("cloudflare_turnstile",       0.97, &["just a moment", "checking your browser", "cf-challenge", "cf_challenge", "turnstile", "__cf_chl_", "cf-mitigated"], "cf_clearance"),
-        ("aws_waf",                    0.96, &["awswafcookiedomainlist", "gokuprops", "aws-waf-token", "/awswaf/", "challenge.js"],               "aws-waf-token"),
-        ("recaptcha",                  0.95, &["g-recaptcha", "google recaptcha", "recaptcha/api2", "i'm not a robot", "im not a robot"],          ""),
-        ("perimeterx_block",           0.94, &["px-captcha", "_pxappid", "/_px", "robot or human", "/blocked?url="],                             "_px3"),
-        ("datadome",                   0.93, &["datadome", "captcha-delivery"],                                                                   "datadome"),
-        ("press_hold",                 0.92, &["press & hold", "press and hold", "press&hold", "hold to confirm"],                                ""),
-        ("yahoo_sad_panda",            0.90, &["sad-panda", "sorry, the page you requested cannot be found", "yahoo.*nytransit"],                 ""),
-        ("akamai_bmp",                 0.88, &["_abck=", "bm_sz=", "akamai bot manager"],                                                         "_abck"),
-        ("imperva",                    0.85, &["_incapsula", "incident_id"],                                                                      "incap_ses_*"),
-        ("generic_human_verification", 0.76, &["verify you are human", "verify that you are human", "unusual traffic", "access to this page has been denied", "automated requests", "sorry, you have been blocked"], ""),
+        ("arkose_labs", 0.98, &["arkoselabs", "funcaptcha"], ""),
+        (
+            "cloudflare_turnstile",
+            0.97,
+            &[
+                "just a moment",
+                "checking your browser",
+                "cf-challenge",
+                "cf_challenge",
+                "turnstile",
+                "__cf_chl_",
+                "cf-mitigated",
+            ],
+            "cf_clearance",
+        ),
+        (
+            "aws_waf",
+            0.96,
+            &[
+                "awswafcookiedomainlist",
+                "gokuprops",
+                "aws-waf-token",
+                "/awswaf/",
+                "challenge.js",
+            ],
+            "aws-waf-token",
+        ),
+        (
+            "recaptcha",
+            0.95,
+            &[
+                "g-recaptcha",
+                "google recaptcha",
+                "recaptcha/api2",
+                "i'm not a robot",
+                "im not a robot",
+            ],
+            "",
+        ),
+        (
+            "perimeterx_block",
+            0.94,
+            &[
+                "px-captcha",
+                "_pxappid",
+                "/_px",
+                "robot or human",
+                "/blocked?url=",
+            ],
+            "_px3",
+        ),
+        (
+            "datadome",
+            0.93,
+            &["datadome", "captcha-delivery"],
+            "datadome",
+        ),
+        (
+            "press_hold",
+            0.92,
+            &[
+                "press & hold",
+                "press and hold",
+                "press&hold",
+                "hold to confirm",
+            ],
+            "",
+        ),
+        (
+            "yahoo_sad_panda",
+            0.90,
+            &[
+                "sad-panda",
+                "sorry, the page you requested cannot be found",
+                "yahoo.*nytransit",
+            ],
+            "",
+        ),
+        (
+            "akamai_bmp",
+            0.88,
+            &["_abck=", "bm_sz=", "akamai bot manager"],
+            "_abck",
+        ),
+        (
+            "imperva",
+            0.85,
+            &["_incapsula", "incident_id"],
+            "incap_ses_*",
+        ),
+        (
+            "generic_human_verification",
+            0.76,
+            &[
+                "verify you are human",
+                "verify that you are human",
+                "unusual traffic",
+                "access to this page has been denied",
+                "automated requests",
+                "sorry, you have been blocked",
+            ],
+            "",
+        ),
     ];
 
     let mut best: Option<(&'static str, f64, &'static str, Vec<&'static str>)> = None;
@@ -570,10 +658,10 @@ fn parse_html_to_tree(html: &str) -> Value {
         .unwrap_or_else(|_| RcDom::default());
     // The Document node's children include doctype + the <html> element.
     for child in dom.document.children.borrow().iter() {
-        if let NodeData::Element { name, .. } = &child.data {
-            if name.local.as_ref() == "html" {
-                return node_to_json(child);
-            }
+        if let NodeData::Element { name, .. } = &child.data
+            && name.local.as_ref() == "html"
+        {
+            return node_to_json(child);
         }
     }
     json!({"type": "element", "tag": "html", "attrs": {}, "children": []})
@@ -665,10 +753,7 @@ async fn rpc_main() -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    emit_event(
-        "ready",
-        json!({ "version": env!("CARGO_PKG_VERSION") }),
-    );
+    emit_event("ready", json!({ "version": env!("CARGO_PKG_VERSION") }));
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
