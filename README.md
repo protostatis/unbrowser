@@ -2,6 +2,8 @@
 
 > A single-binary, Chrome-free headless browser optimized for LLM agents. The cheap layer of a two-engine scraping stack — handles 80% of pages at 1/50th Chrome's per-session cost, with built-in handoff to real Chrome for the hard 20%.
 
+**Open-source under Apache 2.0.** If you want a managed version that handles the Chrome-half escalation, fleet ops, residential IPs, and a built-in Claude agent loop, see **[unchainedsky.com](https://unchainedsky.com)** — same architecture, hosted.
+
 ```
                                        ┌───────────────────────────┐
 LLM agent / MCP host / Python script ─►│  unchained_browser        │  ~50MB RAM
@@ -276,18 +278,28 @@ brew install cmake ninja        # macOS
 cargo build --release
 ```
 
-## Honest moat
+## Self-host vs. managed
 
-This tool's moat is not "novel engineering" — TLS fingerprinting, embedded JS engines, and CSS-selector parsers are commodity. The moat is:
+The open binary is the engine. Running it well in production means handling a few things you won't get for free:
 
-1. **Cost economics at scale** — 10–50× cheaper per session than real Chrome, with the cookie-handoff architecture letting you cap Chrome usage at ~10% of requests.
-2. **Deploy surfaces Chrome can't reach** — Lambda, Workers, edge, embedded.
-3. **Two-engine architecture fit** — works best as the cheap half of a stack with [unchainedsky-cli](https://unchainedsky.com/cli) (the real-Chrome half), not as a Chrome replacement.
+| | This binary (open) | [unchainedsky.com](https://unchainedsky.com) (managed) |
+|---|---|---|
+| Cheap-path scraping | ✅ | ✅ |
+| Chrome escalation for bot-walled / SPA pages | DIY: bring Playwright/CDP, run Chrome yourself, write the cookie loader | ✅ Chrome fleet, residential IPs, retry policies, all included |
+| Cookie cache + rotation across workers | DIY: build a Redis/SQS layer | ✅ centrally managed, scoped per domain |
+| Agent loop with Claude / DDM / Intel | DIY: stitch the Anthropic SDK + your own progress critic | ✅ [unchainedsky-cli](https://unchainedsky.com/cli) ships it |
+| MCP server | ✅ via `--mcp` | ✅ remote MCP, no local install |
+| Per-page cost at 100K/day | $0 (your infra) | usage-priced |
+| Time-to-first-scrape | 2 min build + your wiring | one API key |
+| You own the data | ✅ | ✅ |
+| You own the ops | ✅ | nope, we do |
 
-After Phase 4/5: a fourth moat appears — the only Chrome-free real-JS browser at this footprint.
+**Use the open binary when** you want full control, want to embed it inside your own product, are running edge/Lambda/Workers, or have an existing Chrome setup for escalation.
 
-Honest about what it isn't: a Chrome replacement, a captcha-solver, a pixel-render tool, an SPA browser today.
+**Use [unchainedsky.com](https://unchainedsky.com) when** you'd rather not run a Chrome fleet, want SLA-backed scraping, want to skip the operational glue, or want the full agent loop wired up.
+
+Either way: the JSON-RPC vocabulary and the BlockMap output shape are the same. Code you write against the open binary works against the hosted one and vice versa.
 
 ## License
 
-Proprietary (see LICENSE).
+Apache License 2.0 — see [LICENSE](./LICENSE). Permissive use commercially and otherwise; includes a patent grant covering the TLS-fingerprinting and challenge-detection bits.
