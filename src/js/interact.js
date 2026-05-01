@@ -24,11 +24,36 @@
     if (!el) return { ok: false, error: 'no element for ' + ref };
     var ev = new Event('click', { bubbles: true, cancelable: true });
     el.dispatchEvent(ev);
-    // Default action: follow <a href>. Caller (Rust) decides whether to navigate.
+    // Default action: follow <a href>, OR toggle checkbox/radio state. Caller
+    // (Rust) decides whether to navigate. Only suppressed if the page called
+    // ev.preventDefault() inside its click handler.
     var follow = null;
+    var checked = null;
     if (!ev.defaultPrevented) {
       if (el.tagName === 'A' && el.getAttribute('href')) {
         follow = el.getAttribute('href');
+      } else if (el.tagName === 'INPUT') {
+        var t = (el.getAttribute('type') || '').toLowerCase();
+        if (t === 'checkbox') {
+          el.checked = !el.checked;
+          checked = el.checked;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (t === 'radio') {
+          var name = el.getAttribute('name');
+          if (name) {
+            // Uncheck siblings within the closest <form> (or document if no form).
+            var scope = el;
+            while (scope && scope.tagName !== 'FORM') scope = scope.parentNode;
+            scope = scope || document;
+            var siblings = scope.querySelectorAll('input[type=radio][name="' + name + '"]');
+            for (var i = 0; i < siblings.length; i++) {
+              if (siblings[i] !== el) siblings[i].checked = false;
+            }
+          }
+          el.checked = true;
+          checked = true;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
     }
     return {
@@ -36,6 +61,7 @@
       ref: ref,
       tag: el.tagName.toLowerCase(),
       follow: follow,
+      checked: checked,
     };
   };
 
@@ -62,15 +88,26 @@
       if (!name) continue;
       var type = (inp.getAttribute('type') || 'text').toLowerCase();
       if (type === 'submit' || type === 'button' || type === 'reset' || type === 'image') continue;
-      // For checkbox/radio we'd need actual checked state; we don't track it. Skip for v1.
-      if (type === 'checkbox' || type === 'radio') continue;
+      // Checkbox/radio: only emit when checked. Browsers serialize the value
+      // attr ('on' default for checkboxes), and skip the field entirely when
+      // unchecked. We mirror that.
+      if (type === 'checkbox' || type === 'radio') {
+        if (!inp.checked) continue;
+        var cval = (inp.value !== undefined && inp.value !== null && inp.value !== '')
+          ? inp.value
+          : (inp.getAttribute('value') || 'on');
+        fields.push([name, String(cval)]);
+        continue;
+      }
       var val = (inp.value !== undefined && inp.value !== null) ? inp.value : (inp.getAttribute('value') || '');
       fields.push([name, String(val)]);
     }
+    var enctype = (el.getAttribute('enctype') || 'application/x-www-form-urlencoded').toLowerCase();
     return {
       ok: true,
       action: el.getAttribute('action') || '',
       method: (el.getAttribute('method') || 'get').toLowerCase(),
+      enctype: enctype,
       fields: fields,
     };
   };

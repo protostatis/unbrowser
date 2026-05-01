@@ -419,6 +419,27 @@
     set: function(v) { this.setAttribute('class', v); }
   });
 
+  // Boolean HTML attributes that mirror to a same-named JS property. Real
+  // browsers maintain both: the attribute reflects parsed-from-HTML state,
+  // the property is the live runtime state. For our purposes that means
+  // "if the page set `<input checked>` in source, `el.checked === true`,
+  // and toggling el.checked in JS later sticks." We store the override in
+  // a per-element bag; absent that, fall back to the attribute presence.
+  ['checked', 'disabled', 'selected', 'readOnly'].forEach(function(prop) {
+    var attrName = prop === 'readOnly' ? 'readonly' : prop;
+    Object.defineProperty(Element.prototype, prop, {
+      get: function() {
+        if (this._boolProps && attrName in this._boolProps) return this._boolProps[attrName];
+        return this.hasAttribute(attrName);
+      },
+      set: function(v) {
+        if (!this._boolProps) this._boolProps = {};
+        this._boolProps[attrName] = !!v;
+      },
+      configurable: true,
+    });
+  });
+
   Object.defineProperty(Element.prototype, 'textContent', {
     get: function() {
       var text = '';

@@ -482,7 +482,20 @@ impl Session {
     }
 
     async fn navigate(&mut self, url: &str, exec_scripts: bool) -> Result<Value> {
-        let resp = self.http.get(url).send().await.context("http get")?;
+        self.navigate_with(self.http.get(url), exec_scripts).await
+    }
+
+    // Shared pipeline: take an already-built rquest::RequestBuilder (GET from
+    // navigate, POST from submit), send it, run it through DOM seeding,
+    // BlockMap, challenge detection, and optional script execution. Keeps
+    // GET and POST coherent on cookies/TLS-FP/redirect handling without a
+    // second copy of the post-fetch logic.
+    async fn navigate_with(
+        &mut self,
+        req: rquest::RequestBuilder,
+        exec_scripts: bool,
+    ) -> Result<Value> {
+        let resp = req.send().await.context("http send")?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
 
@@ -984,11 +997,10 @@ impl Session {
         }
         let action = info.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let method = info.get("method").and_then(|v| v.as_str()).unwrap_or("get");
-        if method != "get" {
-            return Err(anyhow!(
-                "only GET form submission supported in v1, form method is '{method}'"
-            ));
-        }
+        let enctype = info
+            .get("enctype")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/x-www-form-urlencoded");
         let pairs: Vec<(String, String)> = info
             .get("fields")
             .and_then(|v| v.as_array())
@@ -1004,16 +1016,42 @@ impl Session {
             })
             .collect();
 
-        let mut target = url::Url::parse(&self.resolve_url(action)?)
-            .map_err(|e| anyhow!("resolve action url: {e}"))?;
-        {
-            let mut qp = target.query_pairs_mut();
-            qp.clear();
-            for (n, v) in &pairs {
-                qp.append_pair(n, v);
+        let target_url = self.resolve_url(action)?;
+
+        match method {
+            "get" => {
+                let mut target =
+                    url::Url::parse(&target_url).map_err(|e| anyhow!("resolve action url: {e}"))?;
+                {
+                    let mut qp = target.query_pairs_mut();
+                    qp.clear();
+                    for (n, v) in &pairs {
+                        qp.append_pair(n, v);
+                    }
+                }
+                self.navigate(target.as_str(), false).await
             }
+            "post" => {
+                if !enctype.starts_with("application/x-www-form-urlencoded") {
+                    // multipart/form-data needs a different request shape
+                    // (boundary, Content-Type, per-part headers). Defer until
+                    // there's a real use case to model the surface against.
+                    return Err(anyhow!(
+                        "POST enctype '{enctype}' not supported (only application/x-www-form-urlencoded)"
+                    ));
+                }
+                let body = url::form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs(pairs.iter().map(|(n, v)| (n.as_str(), v.as_str())))
+                    .finish();
+                let req = self
+                    .http
+                    .post(&target_url)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(body);
+                self.navigate_with(req, false).await
+            }
+            other => Err(anyhow!("unsupported form method '{other}'")),
         }
-        self.navigate(target.as_str(), false).await
     }
 
     fn resolve_url(&self, href: &str) -> Result<String> {
