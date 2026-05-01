@@ -391,6 +391,22 @@ impl Session {
         })
     }
 
+    // Eval that doesn't try to JSON.stringify the result. Right tool for
+    // executing page <script> tags whose last expression often returns a
+    // DOM Element (circular refs → stringify throws). Surfaces real JS
+    // errors via ctx.catch() like eval() does.
+    fn eval_void(&self, code: &str) -> Result<()> {
+        self.js_ctx.with(|ctx| -> Result<()> {
+            match ctx.eval::<rquickjs::Value, _>(code) {
+                Ok(_) => Ok(()),
+                Err(rquickjs::Error::Exception) => {
+                    Err(anyhow!("{}", format_js_exception(ctx.catch())))
+                }
+                Err(e) => Err(anyhow!("js eval: {e}")),
+            }
+        })
+    }
+
     fn eval(&self, code: &str) -> Result<Value> {
         self.js_ctx.with(|ctx| -> Result<Value> {
             let val = match ctx.eval::<rquickjs::Value, _>(code) {
@@ -421,7 +437,7 @@ impl Session {
         })
     }
 
-    async fn navigate(&mut self, url: &str) -> Result<Value> {
+    async fn navigate(&mut self, url: &str, exec_scripts: bool) -> Result<Value> {
         let resp = self.http.get(url).send().await.context("http get")?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
@@ -456,6 +472,40 @@ impl Session {
         let url_lit = serde_json::to_string(&final_url)?;
         let _ = self.eval(&format!("__setLocation({url_lit})"));
 
+        // Phase 5: optionally execute inline page scripts.
+        let scripts = if exec_scripts && (200..400).contains(&status) {
+            let inline = collect_inline_scripts(&tree);
+            let total = inline.len();
+            let mut errors: Vec<String> = Vec::new();
+            for script in inline {
+                // Use eval_void: page scripts often end with an expression
+                // that returns a DOM Element (circular refs break JSON.stringify).
+                if let Err(e) = self.eval_void(&script) {
+                    let msg = e.to_string();
+                    // Truncate noisy stack-traces — caller doesn't need 5KB per error.
+                    if msg.len() > 200 {
+                        errors.push(format!("{}…", &msg[..200]));
+                    } else {
+                        errors.push(msg);
+                    }
+                }
+            }
+            // Fire DOMContentLoaded → settle → load → settle. Time budget split.
+            let _ = self.eval("typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()");
+            let after_dcl = self.settle(2000, 100).await.ok();
+            let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
+            let after_load = self.settle(1500, 50).await.ok();
+            Some(json!({
+                "executed": total,
+                "errors_count": errors.len(),
+                "errors": errors.into_iter().take(10).collect::<Vec<_>>(),
+                "settle_after_dcl": after_dcl,
+                "settle_after_load": after_load,
+            }))
+        } else {
+            None
+        };
+
         self.last_url = Some(final_url.clone());
         self.last_body = Some(body);
 
@@ -468,6 +518,7 @@ impl Session {
             "headers": Value::Object(headers),
             "blockmap": blockmap,
             "challenge": challenge,
+            "scripts": scripts,
         }))
     }
 
@@ -762,7 +813,7 @@ impl Session {
         let follow = result.get("follow").and_then(|v| v.as_str()).unwrap_or("");
         if !follow.is_empty() {
             let target = self.resolve_url(follow)?;
-            return self.navigate(&target).await;
+            return self.navigate(&target, false).await;
         }
         Ok(result)
     }
@@ -810,7 +861,7 @@ impl Session {
                 qp.append_pair(n, v);
             }
         }
-        self.navigate(target.as_str()).await
+        self.navigate(target.as_str(), false).await
     }
 
     fn resolve_url(&self, href: &str) -> Result<String> {
@@ -1048,6 +1099,63 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
     })
 }
 
+// Walk the parsed HTML tree (Value form, output of parse_html_to_tree) and
+// collect inline JavaScript content from <script> elements. Skips:
+//   - <script src="..."> (external scripts; v2 will fetch + exec these)
+//   - <script type="application/json"> (data, not code — accessible via eval)
+//   - <script type="application/ld+json"> (structured data)
+//   - any non-empty `type` other than text/javascript or module
+// Returns scripts in document order.
+fn collect_inline_scripts(tree: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        let Some(obj) = node.as_object() else {
+            return;
+        };
+        let is_element = obj
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|t| t == "element")
+            .unwrap_or(false);
+        let tag = obj.get("tag").and_then(|t| t.as_str()).unwrap_or("");
+        if is_element && tag == "script" {
+            let attrs = obj.get("attrs").and_then(|a| a.as_object());
+            let has_src = attrs.map(|a| a.contains_key("src")).unwrap_or(false);
+            let ty = attrs
+                .and_then(|a| a.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let is_js = ty.is_empty()
+                || ty.eq_ignore_ascii_case("module")
+                || ty.to_ascii_lowercase().contains("javascript");
+            if is_js
+                && !has_src
+                && let Some(children) = obj.get("children").and_then(|c| c.as_array())
+            {
+                let mut content = String::new();
+                for child in children {
+                    if let Some(cobj) = child.as_object()
+                        && cobj.get("type").and_then(|t| t.as_str()) == Some("text")
+                        && let Some(text) = cobj.get("content").and_then(|t| t.as_str())
+                    {
+                        content.push_str(text);
+                    }
+                }
+                if !content.trim().is_empty() {
+                    out.push(content);
+                }
+            }
+        }
+        if let Some(children) = obj.get("children").and_then(|c| c.as_array()) {
+            for child in children {
+                walk(child, out);
+            }
+        }
+    }
+    walk(tree, &mut out);
+    out
+}
+
 fn parse_html_to_tree(html: &str) -> Value {
     let dom = html5ever::parse_document(RcDom::default(), Default::default())
         .from_utf8()
@@ -1179,10 +1287,17 @@ async fn rpc_main() -> Result<()> {
                 }
             }
             "navigate" => match req.params.get("url").and_then(|v| v.as_str()) {
-                Some(u) => match session.navigate(u).await {
-                    Ok(v) => ok_response(id, v),
-                    Err(e) => err_response(id, -2, e.to_string()),
-                },
+                Some(u) => {
+                    let exec = req
+                        .params
+                        .get("exec_scripts")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    match session.navigate(u, exec).await {
+                        Ok(v) => ok_response(id, v),
+                        Err(e) => err_response(id, -2, e.to_string()),
+                    }
+                }
                 None => err_response(id, -32602, "missing 'url' param"),
             },
             "body" => match &session.last_body {
@@ -1320,10 +1435,13 @@ fn mcp_tools() -> Value {
     json!([
         {
             "name": "navigate",
-            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns a BlockMap (semantic page summary with structure/headings/interactives + ASCII outline) inline. The agent typically does not need a follow-up call to know what's on the page.",
+            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, also extracts inline <script> tags from the parsed HTML, eval's them in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. Returns a `scripts` summary with executed/errors when exec_scripts is true.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "url": { "type": "string", "description": "Absolute URL to fetch" } },
+                "properties": {
+                    "url":          { "type": "string", "description": "Absolute URL to fetch" },
+                    "exec_scripts": { "type": "boolean", "description": "Execute inline <script> tags after parse (default false). External src=URL scripts are NOT loaded yet." }
+                },
                 "required": ["url"]
             }
         },
@@ -1453,7 +1571,11 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
     match name {
         "navigate" => {
             let url = str_arg("url").ok_or_else(|| anyhow!("missing 'url'"))?;
-            session.navigate(url).await
+            let exec = args
+                .get("exec_scripts")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            session.navigate(url, exec).await
         }
         "query" => {
             let sel = str_arg("selector").ok_or_else(|| anyhow!("missing 'selector'"))?;
