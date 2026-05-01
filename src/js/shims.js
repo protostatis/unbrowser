@@ -442,12 +442,23 @@
   };
   globalThis.__fireDOMContentLoaded = function() {
     document.readyState = 'interactive';
-    document.dispatchEvent(new Event('DOMContentLoaded'));
+    // Real browsers bubble DOMContentLoaded document → window; our DOM doesn't
+    // link document to window, so we dispatch on both. Frameworks (Ember,
+    // jQuery, …) register on either, sometimes both.
+    document.dispatchEvent(new Event('readystatechange'));
+    var dcl = new Event('DOMContentLoaded', { bubbles: true });
+    document.dispatchEvent(dcl);
+    window.dispatchEvent(dcl);
+    if (typeof document.onreadystatechange === 'function') document.onreadystatechange();
   };
   globalThis.__fireLoad = function() {
     document.readyState = 'complete';
-    if (typeof window.onload === 'function') window.onload(new Event('load'));
-    window.dispatchEvent(new Event('load'));
+    document.dispatchEvent(new Event('readystatechange'));
+    var ev = new Event('load', { bubbles: false });
+    document.dispatchEvent(ev);
+    window.dispatchEvent(ev);
+    if (typeof window.onload === 'function') window.onload(ev);
+    if (typeof document.onreadystatechange === 'function') document.onreadystatechange();
   };
   globalThis.window.onload = null;
   globalThis.window.onunload = null;

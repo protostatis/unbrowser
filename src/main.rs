@@ -482,8 +482,10 @@ impl Session {
             // Spawn external fetches in parallel — current_thread runtime
             // interleaves them at network-I/O await points, so a page with
             // N external bundles takes ~max(round-trip times) instead of
-            // sum(round-trip times). Document ordering is preserved by
-            // collecting results indexed by original position.
+            // sum(round-trip times). Each task has a per-fetch timeout so
+            // a single huge bundle can't hang the navigate indefinitely.
+            // Document ordering preserved by indexing results.
+            const SCRIPT_FETCH_TIMEOUT_MS: u64 = 8000;
             let mut fetch_tasks: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
                 Vec::new();
             for (idx, item) in items.iter().enumerate() {
@@ -493,15 +495,31 @@ impl Session {
                     fetch_tasks.push((
                         idx,
                         tokio::spawn(async move {
-                            match http.get(&url).send().await {
-                                Ok(resp) if resp.status().is_success() => match resp.text().await {
-                                    Ok(body) => Ok(body),
-                                    Err(e) => Err(format!("read {url}: {e}")),
-                                },
-                                Ok(resp) => {
-                                    Err(format!("status {} fetching {}", resp.status(), url))
+                            let fut = async {
+                                match http.get(&url).send().await {
+                                    Ok(resp) if resp.status().is_success() => match resp
+                                        .text()
+                                        .await
+                                    {
+                                        Ok(body) => Ok(body),
+                                        Err(e) => Err(format!("read {url}: {e}")),
+                                    },
+                                    Ok(resp) => {
+                                        Err(format!("status {} fetching {}", resp.status(), url))
+                                    }
+                                    Err(e) => Err(format!("fetch {url}: {e}")),
                                 }
-                                Err(e) => Err(format!("fetch {url}: {e}")),
+                            };
+                            match tokio::time::timeout(
+                                std::time::Duration::from_millis(SCRIPT_FETCH_TIMEOUT_MS),
+                                fut,
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err(format!(
+                                    "timeout {SCRIPT_FETCH_TIMEOUT_MS}ms fetching {url}"
+                                )),
                             }
                         }),
                     ));
