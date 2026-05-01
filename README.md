@@ -7,15 +7,15 @@
 **Python (recommended)** — wheel ships the native binary, Python 3.10+:
 
 ```bash
-pip install unbrowser
+pip install pyunbrowser
 # Or, on systems with a PEP-668-managed Python (Homebrew, modern Linux):
-pipx install unbrowser
+pipx install pyunbrowser
 ```
 
 ```python
-from unbrowser import Client
-with Client() as ub:
-    r = ub.navigate("https://news.ycombinator.com")
+from unbrowser import Client       # note: pip name is pyunbrowser, import is unbrowser
+with Client() as ub:                # (PyPI's name moderation blocks 'unbrowser';
+    r = ub.navigate("https://news.ycombinator.com")   # py- prefix is the standard workaround)
 ```
 
 **Cargo** — binary only, no Python wrapper:

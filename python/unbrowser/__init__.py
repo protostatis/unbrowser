@@ -1,7 +1,9 @@
 """unbrowser — Python client for the unbrowser binary.
 
-`pip install unbrowser` ships the native binary inside the wheel for your
-platform — there's nothing else to install. Use it like:
+`pip install pyunbrowser` ships the native binary inside the wheel for your
+platform — there's nothing else to install. (PyPI distribution name is
+`pyunbrowser` because PyPI's name moderation blocked `unbrowser`; the
+import name is still `unbrowser` — same convention as `python-dateutil`.)
 
     from unbrowser import Client
 
@@ -78,7 +80,7 @@ def find_binary() -> str:
     raise UnbrowserError(
         "Could not locate the unbrowser binary. Tried: $UNBROWSER_BIN, "
         "package-bundled binary, $PATH, target/debug/unbrowser. "
-        "Install via `pip install unbrowser` (ships the binary), "
+        "Install via `pip install pyunbrowser` (PyPI distribution; ships the binary), "
         "`cargo install unbrowser`, or `brew install unbrowser`."
     )
 

@@ -5,7 +5,7 @@
 Single-file native headless browser optimized for LLM agents. Runs JavaScript via QuickJS, returns a low-token page summary on every navigate, and gives you stable element refs for click/type/submit. Tens of MB RAM per session, no Chrome dependency.
 
 ```bash
-pip install unbrowser
+pip install pyunbrowser   # PyPI name; the import is `from unbrowser import ...`
 ```
 
 The wheel ships the native binary for your platform — there's nothing else to install.
