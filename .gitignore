@@ -13,6 +13,11 @@
 *.log
 /tmp/
 
+# Secrets — never commit. .env* covers .env, .env.local, .env.production, etc.
+.env
+.env.*
+!.env.example
+
 # Python package build artifacts (the binary lands in _bin/ at CI time
 # only — we never want it in git; the .gitkeep placeholder is preserved)
 /python/dist/
