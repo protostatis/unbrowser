@@ -161,15 +161,67 @@
     navigation: { type: 0, redirectCount: 0 },
   };
 
-  // ---- requestAnimationFrame / requestIdleCallback ----------------------
-  // No event loop yet — so these are no-ops that don't fire. Page scripts
-  // that depend on rAF for actual rendering won't work; ones that use it
-  // defensively (queue + check later) won't crash.
-  globalThis.requestAnimationFrame = function() { return 0; };
-  globalThis.cancelAnimationFrame = function() {};
-  globalThis.requestIdleCallback = function() { return 0; };
-  globalThis.cancelIdleCallback = function() {};
-  globalThis.queueMicrotask = function(cb) { Promise.resolve().then(cb); };
+  // ---- Timer subsystem (setTimeout / setInterval / rAF / rIC) -----------
+  //
+  // Pull-based event loop: timer callbacks live in JS-side _timers; the
+  // host's `settle` method polls `__pumpTimers()` after sleeping to the
+  // next deadline. This means timers DO NOT fire during synchronous JS
+  // execution — they fire when the host explicitly drains the loop.
+  // For typical page-init use (DOMContentLoaded handlers + a setTimeout(fn,0)
+  // for "next tick"), call settle() once after seeding the DOM.
+  var _timers = {};
+  var _nextTimerId = 1;
+
+  globalThis.setTimeout = function(cb, ms) {
+    if (typeof cb !== 'function') return 0;
+    ms = Math.max(0, Number(ms) || 0);
+    var id = _nextTimerId++;
+    _timers[id] = { cb: cb, deadline: Date.now() + ms, interval: null };
+    return id;
+  };
+  globalThis.setInterval = function(cb, ms) {
+    if (typeof cb !== 'function') return 0;
+    ms = Math.max(1, Number(ms) || 1);
+    var id = _nextTimerId++;
+    _timers[id] = { cb: cb, deadline: Date.now() + ms, interval: ms };
+    return id;
+  };
+  globalThis.clearTimeout = function(id) { delete _timers[id]; };
+  globalThis.clearInterval = function(id) { delete _timers[id]; };
+
+  globalThis.requestAnimationFrame = function(cb) { return setTimeout(cb, 16); };
+  globalThis.cancelAnimationFrame  = function(id) { clearTimeout(id); };
+  globalThis.requestIdleCallback   = function(cb) { return setTimeout(cb, 1); };
+  globalThis.cancelIdleCallback    = function(id) { clearTimeout(id); };
+  globalThis.queueMicrotask        = function(cb) { Promise.resolve().then(cb); };
+
+  // ---- Host-facing event-loop helpers (used by Rust settle) -------------
+  globalThis.__pendingTimers = function() {
+    return Object.keys(_timers).length;
+  };
+  globalThis.__nextTimerDeadline = function() {
+    var min = Infinity;
+    for (var id in _timers) if (_timers[id].deadline < min) min = _timers[id].deadline;
+    return min === Infinity ? null : min;
+  };
+  globalThis.__pumpTimers = function() {
+    var now = Date.now();
+    var fired = 0;
+    var ids = Object.keys(_timers);  // snapshot — callbacks may mutate
+    for (var i = 0; i < ids.length; i++) {
+      var t = _timers[ids[i]];
+      if (!t || t.deadline > now) continue;
+      try { t.cb(); } catch (e) { /* swallow — surface via separate error log if needed */ }
+      if (!_timers[ids[i]]) continue;  // cb may have cleared itself
+      if (t.interval) {
+        t.deadline = Date.now() + t.interval;
+      } else {
+        delete _timers[ids[i]];
+      }
+      fired++;
+    }
+    return fired;
+  };
 
   // ---- getComputedStyle / matchMedia (stubs) ----------------------------
   globalThis.getComputedStyle = function(el) {

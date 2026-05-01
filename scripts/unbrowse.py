@@ -108,6 +108,15 @@ class Client:
     def blockmap(self) -> dict:
         return self.call("blockmap")
 
+    def settle(self, max_ms: int = 2000, max_iters: int = 50) -> dict:
+        """Drain the JS event loop: microtasks + setTimeout/setInterval.
+
+        Returns when queue empty, max_ms elapses, or max_iters hit. Result:
+        {iters, elapsed_ms, microtasks_run, timers_fired, pending_timers,
+         pending_microtasks, timed_out}.
+        """
+        return self.call("settle", max_ms=max_ms, max_iters=max_iters)
+
     def body(self) -> str:
         return self.call("body")
 

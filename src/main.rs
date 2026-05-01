@@ -168,8 +168,10 @@ fn build_cookie(item: &Value, default_url: Option<&str>) -> Result<(String, Stri
 }
 
 struct Session {
-    // Holds the QuickJS runtime alive for the Context's lifetime.
-    _js_rt: rquickjs::Runtime,
+    // Holds the QuickJS runtime alive for the Context's lifetime AND
+    // exposes execute_pending_job() / is_job_pending() so settle() can
+    // drain the microtask queue between timer firings.
+    js_rt: rquickjs::Runtime,
     js_ctx: rquickjs::Context,
     http: rquest::Client,
     jar: Arc<CookieJar>,
@@ -209,7 +211,7 @@ impl Session {
             Ok(())
         })?;
         Ok(Self {
-            _js_rt: js_rt,
+            js_rt,
             js_ctx,
             http,
             jar,
@@ -300,6 +302,95 @@ impl Session {
 
     fn blockmap(&self) -> Result<Value> {
         self.eval("__blockmap()")
+    }
+
+    // Drain the JS event loop: alternately runs queued microtasks (Promise
+    // resolutions, queueMicrotask, etc.) and fires expired setTimeout/Interval
+    // callbacks, sleeping to the next deadline when only timers remain.
+    // Returns when the queue is fully empty OR `max_ms` elapses OR `max_iters`
+    // iterations complete (whichever first).
+    //
+    // Iteration model:
+    //   1. Drain all pending microtasks (via Runtime::execute_pending_job).
+    //   2. Pump expired timers (JS-side __pumpTimers).
+    //   3. If neither produced work and timers are pending, sleep to the
+    //      earliest deadline (capped by remaining max_ms).
+    //   4. If nothing is pending at all, exit.
+    async fn settle(&self, max_ms: u64, max_iters: u32) -> Result<Value> {
+        let start = std::time::Instant::now();
+        let mut iters: u32 = 0;
+        let mut total_microtasks: u64 = 0;
+        let mut total_timers: u64 = 0;
+
+        loop {
+            if iters >= max_iters {
+                break;
+            }
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            if elapsed_ms >= max_ms {
+                break;
+            }
+
+            // 1. Drain microtasks.
+            let mut mt_this_iter: u64 = 0;
+            loop {
+                let had_more = self
+                    .js_rt
+                    .execute_pending_job()
+                    .map_err(|e| anyhow!("microtask exception: {e:?}"))?;
+                if !had_more {
+                    break;
+                }
+                mt_this_iter += 1;
+                if mt_this_iter > 10_000 {
+                    break; // safety against infinite microtask loops
+                }
+            }
+            total_microtasks += mt_this_iter;
+
+            // 2. Pump expired timers.
+            let fired = self.eval("__pumpTimers()")?.as_u64().unwrap_or(0);
+            total_timers += fired;
+
+            // 3. Decide whether to keep going.
+            let pending_timers = self.eval("__pendingTimers()")?.as_u64().unwrap_or(0);
+            let microtasks_pending = self.js_rt.is_job_pending();
+
+            if pending_timers == 0 && !microtasks_pending {
+                break; // queue fully empty
+            }
+
+            let did_work_this_iter = mt_this_iter > 0 || fired > 0;
+            if !did_work_this_iter && !microtasks_pending && pending_timers > 0 {
+                // Only timers are pending and none expired this iter — sleep
+                // to the earliest deadline (capped by remaining time budget).
+                let deadline = self.eval("__nextTimerDeadline()")?.as_f64();
+                if let Some(deadline_ms) = deadline {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as f64)
+                        .unwrap_or(0.0);
+                    let remaining_budget = (max_ms.saturating_sub(elapsed_ms)) as f64;
+                    let wait_ms = (deadline_ms - now_ms).max(0.0).min(remaining_budget);
+                    if wait_ms > 0.0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
+                    }
+                }
+            }
+
+            iters += 1;
+        }
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(json!({
+            "iters": iters,
+            "elapsed_ms": elapsed_ms,
+            "microtasks_run": total_microtasks,
+            "timers_fired": total_timers,
+            "pending_timers": self.eval("__pendingTimers()")?.as_u64().unwrap_or(0),
+            "pending_microtasks": self.js_rt.is_job_pending(),
+            "timed_out": iters >= max_iters || elapsed_ms >= max_ms,
+        }))
     }
 
     fn seed_dom(&self, tree: &Value) -> Result<()> {
@@ -962,6 +1053,22 @@ async fn rpc_main() -> Result<()> {
                 Ok(v) => ok_response(id, v),
                 Err(e) => err_response(id, -6, e.to_string()),
             },
+            "settle" => {
+                let max_ms = req
+                    .params
+                    .get("max_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2000);
+                let max_iters = req
+                    .params
+                    .get("max_iters")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50) as u32;
+                match session.settle(max_ms, max_iters).await {
+                    Ok(v) => ok_response(id, v),
+                    Err(e) => err_response(id, -6, e.to_string()),
+                }
+            }
             "click" => match req.params.get("ref").and_then(|v| v.as_str()) {
                 Some(r) => match session.click(r).await {
                     Ok(v) => ok_response(id, v),
@@ -1079,6 +1186,17 @@ fn mcp_tools() -> Value {
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
+            "name": "settle",
+            "description": "Drain the JS event loop: alternately runs queued microtasks (Promise resolutions) and fires expired setTimeout/setInterval callbacks, sleeping to the next deadline when only timers remain. Returns when the queue is empty OR max_ms elapses OR max_iters iterations complete. Defaults: max_ms=2000, max_iters=50. Use after seeding the DOM (or after eval'd code that schedules timers) to let pending callbacks run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "max_ms":    { "type": "integer", "description": "Max wall-clock ms to spend (default 2000)" },
+                    "max_iters": { "type": "integer", "description": "Max iterations of the drain loop (default 50)" }
+                }
+            }
+        },
+        {
             "name": "click",
             "description": "Dispatch a click event on the element at `ref` (e.g. e:142, returned from query). If the element is <a href> and the click was not preventDefault'd, auto-follows the href via navigate (returns the full navigation result with new BlockMap). Otherwise returns {ok, ref, tag, follow: null}.",
             "inputSchema": {
@@ -1171,6 +1289,11 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
             session.query_text(text, selector, exact, limit)
         }
         "blockmap" => session.blockmap(),
+        "settle" => {
+            let max_ms = args.get("max_ms").and_then(|v| v.as_u64()).unwrap_or(2000);
+            let max_iters = args.get("max_iters").and_then(|v| v.as_u64()).unwrap_or(50) as u32;
+            session.settle(max_ms, max_iters).await
+        }
         "click" => {
             let r = str_arg("ref").ok_or_else(|| anyhow!("missing 'ref'"))?;
             session.click(r).await
