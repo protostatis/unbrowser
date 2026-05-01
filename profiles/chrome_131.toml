@@ -1,0 +1,18 @@
+# Chrome 131 on macOS — kept around for sites pinned to older fingerprints
+# (rare but happens with internal corp dashboards). Identical structure to
+# chrome_134.toml; bumping any field here without bumping its sibling in
+# the others is how stealth gets noticed.
+
+name = "chrome_131"
+emulation = "chrome_131"
+
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+accept_language = "en-US,en;q=0.9"
+sec_ch_ua = '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"'
+sec_ch_ua_mobile = "?0"
+sec_ch_ua_platform = '"macOS"'
+
+platform = "MacIntel"
+languages = ["en-US", "en"]
+hardware_concurrency = 12
+device_memory = 8
