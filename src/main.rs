@@ -539,11 +539,32 @@ impl Session {
             // Eval all in document order. Page scripts often end with an
             // Element-returning expression (circular refs → JSON.stringify
             // throws), so use eval_void.
+            //
+            // Bound total eval time. Heavy React/Vue bundles can run pathological
+            // top-level code in QuickJS for tens of seconds; we don't want a
+            // single navigate hanging the binary. The interrupt handler fires
+            // periodically inside QuickJS; returning true aborts the running
+            // script with InternalError. Default budget: 5s for ALL scripts
+            // together. Scripts after the budget gets exhausted get aborted on
+            // their first interrupt check.
+            const SCRIPT_EVAL_BUDGET_MS: u64 = 5000;
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(SCRIPT_EVAL_BUDGET_MS);
+            self.js_rt
+                .set_interrupt_handler(Some(Box::new(move || {
+                    std::time::Instant::now() >= deadline
+                })));
+
             let mut eval_errors: Vec<String> = Vec::new();
             let mut executed: usize = 0;
+            let mut interrupted: usize = 0;
             for source in &sources {
                 if let Err(e) = self.eval_void(source) {
                     let msg = e.to_string();
+                    let is_interrupt = msg.contains("interrupted");
+                    if is_interrupt {
+                        interrupted += 1;
+                    }
                     if msg.len() > 200 {
                         eval_errors.push(format!("{}…", &msg[..200]));
                     } else {
@@ -553,6 +574,10 @@ impl Session {
                     executed += 1;
                 }
             }
+
+            // Clear the handler so subsequent eval/query/etc calls (including
+            // those inside settle's __pumpTimers, __pollFetches) are not bounded.
+            self.js_rt.set_interrupt_handler(None);
             // Fire DOMContentLoaded → settle → load → settle.
             let _ = self.eval(
                 "typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()",
@@ -564,6 +589,7 @@ impl Session {
                 "inline_count": inline_count,
                 "external_count": external_count,
                 "executed": executed,
+                "interrupted": interrupted,
                 "errors_count": eval_errors.len(),
                 "errors": eval_errors.into_iter().take(10).collect::<Vec<_>>(),
                 "fetch_errors_count": fetch_errors.len(),
