@@ -29,10 +29,13 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-14         # Apple Silicon runner
+            wheel_platform: macosx_11_0_arm64
           - target: x86_64-apple-darwin
             os: macos-13         # Intel Mac runner
+            wheel_platform: macosx_10_12_x86_64
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04     # pin: glibc 2.35 == manylinux_2_35
+            wheel_platform: manylinux_2_35_x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +94,34 @@ jobs:
           shasum -a 256 unbrowser-${{ matrix.target }}.tar.gz > unbrowser-${{ matrix.target }}.tar.gz.sha256
           cat unbrowser-${{ matrix.target }}.tar.gz.sha256
 
+      # ---- Python wheel ----
+      # Bundle the freshly-built native binary into a Python wheel for this
+      # platform. End users then `pip install unbrowser` and get a working
+      # binary with nothing else to install. The same wheel is published
+      # to PyPI by the publish-pypi job.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bundle binary into Python package
+        run: |
+          cp target/${{ matrix.target }}/release/unbrowser python/unbrowser/_bin/unbrowser
+          chmod +x python/unbrowser/_bin/unbrowser
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build wheel
+          cd python && python -m build --wheel
+
+      - name: Re-tag wheel for ${{ matrix.wheel_platform }}
+        # hatchling produces py3-none-any; we re-tag to the correct platform
+        # since the wheel bundles a platform-specific binary.
+        run: |
+          cd python/dist
+          python -m wheel tags --remove --platform-tag ${{ matrix.wheel_platform }} unbrowser-*-py3-none-any.whl
+          ls -la
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -98,8 +129,78 @@ jobs:
           path: |
             unbrowser-${{ matrix.target }}.tar.gz
             unbrowser-${{ matrix.target }}.tar.gz.sha256
+            python/dist/unbrowser-*.whl
           if-no-files-found: error
           retention-days: 7
+
+  # Source distribution. Platform-neutral, no binary inside — lets users
+  # on platforms we don't ship a wheel for build from source themselves
+  # (and PyPI strongly prefers an sdist alongside any binary wheels).
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build sdist
+        run: |
+          python -m pip install --upgrade pip build
+          cd python && python -m build --sdist
+          ls -la dist/
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unbrowser-sdist
+          path: python/dist/unbrowser-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publish wheels (one per platform from `build`) + sdist to PyPI via
+  # OIDC trusted publishing — no PYPI_API_TOKEN secret to manage. Requires
+  # the user to configure a Trusted Publisher on PyPI for this repo +
+  # workflow + environment ONCE before the first tag push:
+  #   PyPI -> Account -> Publishing -> Add a pending publisher
+  #   Project name: unbrowser  (claims the name on first publish)
+  #   Owner: protostatis
+  #   Repository: unbrowser
+  #   Workflow filename: release.yml
+  #   Environment name: pypi   (must match the `environment:` field below)
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build, build-sdist]
+    runs-on: ubuntu-latest
+    # Only publish on tag pushes (skip workflow_dispatch test runs).
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write   # required for OIDC trusted publishing
+    environment:
+      name: pypi
+      url: https://pypi.org/p/unbrowser
+    steps:
+      - name: Download all wheel + sdist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-staging
+      - name: Collect distributions into single dist/ dir
+        # download-artifact gives one subdir per artifact name; flatten
+        # into a single dist/ that gh-action-pypi-publish expects.
+        run: |
+          mkdir -p dist
+          # wheels (one per platform target)
+          find dist-staging -name 'unbrowser-*.whl' -exec cp {} dist/ \;
+          # sdist (single)
+          find dist-staging -name 'unbrowser-*.tar.gz' \
+              -not -name 'unbrowser-*-apple-darwin.tar.gz' \
+              -not -name 'unbrowser-*-linux-gnu.tar.gz' \
+              -exec cp {} dist/ \;
+          ls -la dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password` field — Trusted Publishing uses the OIDC token
+        # the GitHub runner already has.
 
   release:
     name: Create Release

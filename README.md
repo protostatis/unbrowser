@@ -2,29 +2,50 @@
 
 **Web access for LLM agents. One static binary. No Chrome.**
 
-### Install (download)
+### Install
+
+**Python (recommended)** — wheel ships the native binary, Python 3.10+:
+
+```bash
+pip install unbrowser
+# Or, on systems with a PEP-668-managed Python (Homebrew, modern Linux):
+pipx install unbrowser
+```
+
+```python
+from unbrowser import Client
+with Client() as ub:
+    r = ub.navigate("https://news.ycombinator.com")
+```
+
+**Cargo** — binary only, no Python wrapper:
+
+```bash
+cargo install unbrowser
+unbrowser --mcp
+```
+
+**Pre-built tarball** — for systems without Python or Rust:
 
 ```bash
 # macOS Apple Silicon
 curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-aarch64-apple-darwin.tar.gz | tar xz
-
 # macOS Intel
 curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-apple-darwin.tar.gz | tar xz
-
-# Linux x86_64
+# Linux x86_64 (glibc 2.35+)
 curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-unknown-linux-gnu.tar.gz | tar xz
 ```
 
-### Or build from source
+**From source**:
 
 ```bash
 cargo build --release   # binary at ./target/release/unbrowser
 ```
 
-### Use it
+### Bare RPC
 
 ```bash
-echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' | ./unbrowser
+echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"}}' | unbrowser
 ```
 
 That's the install. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.
