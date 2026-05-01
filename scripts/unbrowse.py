@@ -71,8 +71,8 @@ class Client:
 
     # ---- typed wrappers (don't add behavior; just discoverability) -------
 
-    def navigate(self, url: str) -> dict:
-        return self.call("navigate", url=url)
+    def navigate(self, url: str, exec_scripts: bool = False) -> dict:
+        return self.call("navigate", url=url, exec_scripts=exec_scripts)
 
     def query(self, selector: str) -> list[dict]:
         return self.call("query", selector=selector)
