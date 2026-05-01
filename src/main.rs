@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::io::Write;
-use std::sync::{Arc, RwLock};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result, anyhow};
 use html5ever::tendril::TendrilSink;
@@ -167,6 +169,115 @@ fn build_cookie(item: &Value, default_url: Option<&str>) -> Result<(String, Stri
     Ok((s, url))
 }
 
+// =============================================================================
+// Fetch worker — lets page-script `fetch()` calls go through the same
+// rquest::Client we use for navigate (so cookies + Chrome 131 TLS fingerprint
+// stay coherent). One dedicated thread, one current_thread tokio runtime,
+// requests serialized through an mpsc channel. Responses queue into a shared
+// Mutex<Vec<...>> that JS drains via __host_drain_fetches() during settle().
+// =============================================================================
+
+struct FetchRequest {
+    id: u64,
+    method: String,
+    url: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct FetchResponse {
+    id: u64,
+    status: u16,
+    headers: HashMap<String, String>,
+    body: String,
+    error: Option<String>,
+}
+
+struct FetchQueue {
+    sender: mpsc::Sender<FetchRequest>,
+    results: Arc<Mutex<Vec<FetchResponse>>>,
+}
+
+fn spawn_fetch_worker(http: rquest::Client) -> FetchQueue {
+    let (tx, rx) = mpsc::channel::<FetchRequest>();
+    let results: Arc<Mutex<Vec<FetchResponse>>> = Arc::new(Mutex::new(Vec::new()));
+    let results_for_thread = results.clone();
+
+    std::thread::Builder::new()
+        .name("unbrowse-fetch".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            runtime.block_on(async move {
+                while let Ok(req) = rx.recv() {
+                    let resp = run_fetch(http.clone(), req).await;
+                    if let Ok(mut g) = results_for_thread.lock() {
+                        g.push(resp);
+                    }
+                }
+            });
+        })
+        .ok();
+
+    FetchQueue {
+        sender: tx,
+        results,
+    }
+}
+
+async fn run_fetch(http: rquest::Client, req: FetchRequest) -> FetchResponse {
+    let method = match req.method.to_uppercase().as_str() {
+        "GET" => http::Method::GET,
+        "POST" => http::Method::POST,
+        "PUT" => http::Method::PUT,
+        "DELETE" => http::Method::DELETE,
+        "HEAD" => http::Method::HEAD,
+        "PATCH" => http::Method::PATCH,
+        "OPTIONS" => http::Method::OPTIONS,
+        _ => http::Method::GET,
+    };
+    let mut builder = http.request(method, &req.url);
+    for (k, v) in &req.headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    if !req.body.is_empty() {
+        builder = builder.body(req.body.clone());
+    }
+    match builder.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let mut hmap = HashMap::new();
+            for (n, v) in resp.headers() {
+                hmap.insert(
+                    n.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                );
+            }
+            let body = resp.text().await.unwrap_or_default();
+            FetchResponse {
+                id: req.id,
+                status,
+                headers: hmap,
+                body,
+                error: None,
+            }
+        }
+        Err(e) => FetchResponse {
+            id: req.id,
+            status: 0,
+            headers: HashMap::new(),
+            body: String::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
 struct Session {
     // Holds the QuickJS runtime alive for the Context's lifetime AND
     // exposes execute_pending_job() / is_job_pending() so settle() can
@@ -175,6 +286,9 @@ struct Session {
     js_ctx: rquickjs::Context,
     http: rquest::Client,
     jar: Arc<CookieJar>,
+    // Fetch worker queue — held to keep the worker thread alive and to
+    // expose results to settle() via __pollFetches() driven by the JS layer.
+    _fetch: Arc<FetchQueue>,
     last_url: Option<String>,
     last_body: Option<String>,
 }
@@ -193,12 +307,18 @@ impl Session {
             .redirect(rquest::redirect::Policy::limited(10))
             .build()
             .context("rquest client build")?;
+        // Spawn the fetch worker thread (uses the same rquest::Client so cookies
+        // + TLS fingerprint stay coherent with navigate).
+        let fetch = Arc::new(spawn_fetch_worker(http.clone()));
+
         // Install JS layers in order:
         //   1. dom.js     — document, Element, querySelector, __seedDOM, etc.
         //   2. shims.js   — passive browser globals (window, navigator, location,
         //                   storage, etc.) — coherent with our Chrome 131 TLS FP
         //   3. blockmap.js — __blockmap() page-summary walker
         //   4. interact.js — __click, __type, __byRef, __formData
+        // Then register host bindings the JS layer references at call time
+        // (__host_fetch_send, __host_drain_fetches).
         js_ctx.with(|ctx| -> Result<()> {
             ctx.eval::<(), _>(DOM_JS)
                 .map_err(|e| anyhow!("eval dom.js: {e}"))?;
@@ -208,6 +328,56 @@ impl Session {
                 .map_err(|e| anyhow!("eval blockmap.js: {e}"))?;
             ctx.eval::<(), _>(INTERACT_JS)
                 .map_err(|e| anyhow!("eval interact.js: {e}"))?;
+
+            // __host_fetch_send(id, method, url, headers_json, body) — fire-and-forget.
+            // headers_json is a JSON-encoded string from JS to avoid converting
+            // an rquickjs Object inside the host closure.
+            let sender = fetch.sender.clone();
+            let host_send = rquickjs::Function::new(
+                ctx.clone(),
+                move |id: f64, method: String, url: String, headers_json: String, body: String| {
+                    let mut hmap: HashMap<String, String> = HashMap::new();
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&headers_json)
+                    {
+                        for (k, v) in map {
+                            if let Some(s) = v.as_str() {
+                                hmap.insert(k, s.to_string());
+                            }
+                        }
+                    }
+                    let req = FetchRequest {
+                        id: id as u64,
+                        method,
+                        url,
+                        headers: hmap,
+                        body: body.into_bytes(),
+                    };
+                    let _ = sender.send(req);
+                },
+            )
+            .map_err(|e| anyhow!("install __host_fetch_send: {e}"))?;
+            ctx.globals()
+                .set("__host_fetch_send", host_send)
+                .map_err(|e| anyhow!("set __host_fetch_send: {e}"))?;
+
+            // __host_drain_fetches() -> JSON-encoded array of pending FetchResponse.
+            // JS-side parses and resolves the corresponding Promises.
+            let results = fetch.results.clone();
+            let host_drain = rquickjs::Function::new(ctx.clone(), move || -> String {
+                let mut guard = match results.lock() {
+                    Ok(g) => g,
+                    Err(_) => return "[]".to_string(),
+                };
+                let drained: Vec<FetchResponse> = guard.drain(..).collect();
+                drop(guard);
+                serde_json::to_string(&drained).unwrap_or_else(|_| "[]".to_string())
+            })
+            .map_err(|e| anyhow!("install __host_drain_fetches: {e}"))?;
+            ctx.globals()
+                .set("__host_drain_fetches", host_drain)
+                .map_err(|e| anyhow!("set __host_drain_fetches: {e}"))?;
+
             Ok(())
         })?;
         Ok(Self {
@@ -215,6 +385,7 @@ impl Session {
             js_ctx,
             http,
             jar,
+            _fetch: fetch,
             last_url: None,
             last_body: None,
         })
@@ -321,6 +492,7 @@ impl Session {
         let mut iters: u32 = 0;
         let mut total_microtasks: u64 = 0;
         let mut total_timers: u64 = 0;
+        let mut total_fetches: u64 = 0;
 
         loop {
             if iters >= max_iters {
@@ -352,16 +524,25 @@ impl Session {
             let fired = self.eval("__pumpTimers()")?.as_u64().unwrap_or(0);
             total_timers += fired;
 
-            // 3. Decide whether to keep going.
+            // 3. Drain fetch responses (resolves pending Promises JS-side).
+            let resolved = self.eval("__pollFetches()")?.as_u64().unwrap_or(0);
+            total_fetches += resolved;
+
+            // 4. Decide whether to keep going.
             let pending_timers = self.eval("__pendingTimers()")?.as_u64().unwrap_or(0);
+            let pending_fetches = self.eval("__pendingFetches()")?.as_u64().unwrap_or(0);
             let microtasks_pending = self.js_rt.is_job_pending();
 
-            if pending_timers == 0 && !microtasks_pending {
+            if pending_timers == 0 && pending_fetches == 0 && !microtasks_pending {
                 break; // queue fully empty
             }
 
-            let did_work_this_iter = mt_this_iter > 0 || fired > 0;
-            if !did_work_this_iter && !microtasks_pending && pending_timers > 0 {
+            let did_work_this_iter = mt_this_iter > 0 || fired > 0 || resolved > 0;
+            if !did_work_this_iter && !microtasks_pending && pending_fetches > 0 {
+                // Only fetches in flight — sleep briefly waiting for the worker
+                // thread to push results.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            } else if !did_work_this_iter && !microtasks_pending && pending_timers > 0 {
                 // Only timers are pending and none expired this iter — sleep
                 // to the earliest deadline (capped by remaining time budget).
                 let deadline = self.eval("__nextTimerDeadline()")?.as_f64();
@@ -387,7 +568,9 @@ impl Session {
             "elapsed_ms": elapsed_ms,
             "microtasks_run": total_microtasks,
             "timers_fired": total_timers,
+            "fetches_resolved": total_fetches,
             "pending_timers": self.eval("__pendingTimers()")?.as_u64().unwrap_or(0),
+            "pending_fetches": self.eval("__pendingFetches()")?.as_u64().unwrap_or(0),
             "pending_microtasks": self.js_rt.is_job_pending(),
             "timed_out": iters >= max_iters || elapsed_ms >= max_ms,
         }))

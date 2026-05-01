@@ -195,6 +195,102 @@
   globalThis.cancelIdleCallback    = function(id) { clearTimeout(id); };
   globalThis.queueMicrotask        = function(cb) { Promise.resolve().then(cb); };
 
+  // ---- fetch() — bridges to Rust via __host_fetch_send + __host_drain_fetches.
+  //
+  // Pull-based: fetch() registers a pending Promise + sends the request to the
+  // Rust worker thread. The worker performs the rquest async, queues the
+  // response. settle() periodically calls __pollFetches() which drains and
+  // resolves matching Promises. Routes through the same rquest::Client as
+  // navigate so cookies + Chrome 131 TLS fingerprint stay coherent.
+  var _pendingFetches = {};
+  var _nextFetchId = 1;
+
+  globalThis.fetch = function(input, init) {
+    init = init || {};
+    var url = (typeof input === 'string') ? input : (input && input.url ? input.url : String(input));
+    var method = (init.method || 'GET').toUpperCase();
+    var headers = {};
+    if (init.headers) {
+      if (init.headers instanceof Headers) {
+        init.headers.forEach(function(v, k) { headers[k] = v; });
+      } else if (typeof init.headers === 'object') {
+        for (var k in init.headers) headers[k] = String(init.headers[k]);
+      }
+    }
+    var body = init.body || '';
+    if (typeof body !== 'string') {
+      try { body = JSON.stringify(body); } catch (e) { body = String(body); }
+    }
+    var id = _nextFetchId++;
+    return new Promise(function(resolve, reject) {
+      _pendingFetches[id] = { resolve: resolve, reject: reject, url: url };
+      if (typeof __host_fetch_send !== 'function') {
+        delete _pendingFetches[id];
+        reject(new Error('fetch host binding not available'));
+        return;
+      }
+      try {
+        __host_fetch_send(id, method, url, JSON.stringify(headers), body);
+      } catch (e) {
+        delete _pendingFetches[id];
+        reject(e);
+      }
+    });
+  };
+
+  // Builds a Response-like object from the host's drained payload.
+  function buildResponse(pending, raw) {
+    var status = raw.status || 0;
+    var bodyText = raw.body || '';
+    return {
+      ok: status >= 200 && status < 300,
+      status: status,
+      statusText: '',
+      url: pending.url,
+      redirected: false,
+      type: 'basic',
+      bodyUsed: false,
+      headers: new Headers(raw.headers || {}),
+      text: function() { this.bodyUsed = true; return Promise.resolve(bodyText); },
+      json: function() {
+        this.bodyUsed = true;
+        try { return Promise.resolve(JSON.parse(bodyText)); }
+        catch (e) { return Promise.reject(e); }
+      },
+      arrayBuffer: function() { this.bodyUsed = true; return Promise.resolve(new ArrayBuffer(0)); },
+      blob: function() { this.bodyUsed = true; return Promise.resolve(new Blob([bodyText])); },
+      clone: function() { return this; }
+    };
+  }
+
+  globalThis.__pollFetches = function() {
+    if (typeof __host_drain_fetches !== 'function') return 0;
+    var raw;
+    try { raw = __host_drain_fetches(); } catch (e) { return 0; }
+    if (!raw || raw === '[]') return 0;
+    var results;
+    try { results = JSON.parse(raw); } catch (e) { return 0; }
+    if (!Array.isArray(results)) return 0;
+    var resolved = 0;
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var pending = _pendingFetches[r.id];
+      if (!pending) continue;
+      delete _pendingFetches[r.id];
+      if (r.error) {
+        pending.reject(new Error(r.error));
+      } else {
+        pending.resolve(buildResponse(pending, r));
+      }
+      resolved++;
+    }
+    return resolved;
+  };
+
+  globalThis.__pendingFetches = function() {
+    return Object.keys(_pendingFetches).length;
+  };
+
   // ---- Host-facing event-loop helpers (used by Rust settle) -------------
   globalThis.__pendingTimers = function() {
     return Object.keys(_timers).length;
