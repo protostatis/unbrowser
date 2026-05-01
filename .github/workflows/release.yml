@@ -96,9 +96,11 @@ jobs:
 
       # ---- Python wheel ----
       # Bundle the freshly-built native binary into a Python wheel for this
-      # platform. End users then `pip install unbrowser` and get a working
+      # platform. End users then `pip install pyunbrowser` and get a working
       # binary with nothing else to install. The same wheel is published
-      # to PyPI by the publish-pypi job.
+      # to PyPI by the publish-pypi job. (PyPI distribution is `pyunbrowser`
+      # because PyPI's name moderation blocks `unbrowser`; the import name
+      # remains `unbrowser` everywhere.)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -163,7 +165,7 @@ jobs:
   # the user to configure a Trusted Publisher on PyPI for this repo +
   # workflow + environment ONCE before the first tag push:
   #   PyPI -> Account -> Publishing -> Add a pending publisher
-  #   Project name: unbrowser  (claims the name on first publish)
+  #   Project name: pyunbrowser  (claims the name on first publish)
   #   Owner: protostatis
   #   Repository: unbrowser
   #   Workflow filename: release.yml
@@ -178,7 +180,7 @@ jobs:
       id-token: write   # required for OIDC trusted publishing
     environment:
       name: pypi
-      url: https://pypi.org/p/unbrowser
+      url: https://pypi.org/p/pyunbrowser
     steps:
       - name: Download all wheel + sdist artifacts
         uses: actions/download-artifact@v4

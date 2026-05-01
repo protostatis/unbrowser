@@ -3,7 +3,12 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "unbrowser"
+# Distribution name `pyunbrowser` (not `unbrowser`) because PyPI's name
+# moderation blocked `unbrowser` on typosquat-prevention grounds (it's too
+# close to `browser`). The `py-` prefix is the established PyPI workaround
+# (cf. python-dateutil → `from dateutil import ...`); the import name and
+# binary stay `unbrowser` everywhere else.
+name = "pyunbrowser"
 version = "0.0.1"
 description = "Web access for LLM agents. One static binary. No Chrome."
 readme = "README.md"
@@ -43,6 +48,12 @@ packages = ["unbrowser"]
 # wheel based on the host (macosx_*, linux_*, etc.). CI cross-compiles by
 # post-processing the wheel name via `wheel tags --platform <target>`.
 pure-python = false
+# Even though _bin/* is gitignored (binary is a build artifact, never in git),
+# hatchling's package auto-discovery picks up the binary if it's physically
+# present at build time — exactly what we want. CI drops the per-platform
+# binary into _bin/ before running `python -m build --wheel`. Sdist build
+# explicitly excludes _bin/ (see [tool.hatch.build.targets.sdist] below)
+# because a source distribution must be platform-neutral.
 # Suppress hatchling's "did you mean to mark this as platform-specific?"
 # nag — yes, we did, deliberately, for the bundled binary.
 [tool.hatch.metadata]
