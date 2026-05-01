@@ -619,11 +619,31 @@
       return { pos: pos, total: idx };
     }
 
+    // CSS An+B parsing. Accepts: integer, 'odd', 'even', 'n', '-n+N', '2n+1',
+    // '3n-2', etc. Returns {a, b} or null. p must satisfy p = a*k + b for some
+    // integer k >= 0 with p >= 1.
+    function parseAnB(spec) {
+      if (spec == null) return null;
+      var s = String(spec).replace(/\s+/g, '').toLowerCase();
+      if (s === 'odd') return { a: 2, b: 1 };
+      if (s === 'even') return { a: 2, b: 0 };
+      if (s.indexOf('n') === -1) {
+        var n = parseInt(s, 10);
+        return isNaN(n) ? null : { a: 0, b: n };
+      }
+      var m = s.match(/^([+-]?\d*)n([+-]\d+)?$/);
+      if (!m) return null;
+      var a = m[1] === '' || m[1] === '+' ? 1 : (m[1] === '-' ? -1 : parseInt(m[1], 10));
+      var b = m[2] ? parseInt(m[2], 10) : 0;
+      return { a: a, b: b };
+    }
+
     function matchN(spec, p) {
-      if (spec === 'odd') return (p % 2) === 1;
-      if (spec === 'even') return (p % 2) === 0 && p > 0;
-      var n = parseInt(spec, 10);
-      return !isNaN(n) && p === n;
+      var ab = parseAnB(spec);
+      if (!ab) return false;
+      if (ab.a === 0) return p === ab.b;
+      var k = (p - ab.b) / ab.a;
+      return k >= 0 && Number.isInteger(k);
     }
 
     var info;
@@ -636,27 +656,62 @@
       case 'nth-of-type':   return matchN(arg, indexInParent(true).pos);
       case 'only-child':    info = indexInParent(false); return info.total === 1;
       case 'only-of-type':  info = indexInParent(true);  return info.total === 1;
+      case 'not':           return !matchesSelector(el, [arg]);
+      case 'has': {
+        // True if any descendant matches the inner selector. Cheap recursive
+        // walk; bounded by the tree size we already paid to build.
+        var stack = [].concat(el.childNodes || []);
+        while (stack.length) {
+          var c = stack.shift();
+          if (c.nodeType === ELEMENT_NODE) {
+            if (matchesSelector(c, [arg])) return true;
+            for (var i = 0; i < (c.childNodes || []).length; i++) stack.push(c.childNodes[i]);
+          }
+        }
+        return false;
+      }
       default: return false;
     }
   }
 
   function matchesSingle(el, part) {
-    // Simple selector: tag#id.class[attr=val]:pseudo(arg) or `*` (universal)
-    var re = /^(\*|[a-zA-Z0-9_-]*)?(?:#([a-zA-Z0-9_-]+))?(?:\.([a-zA-Z0-9_. -]+))?(?:\[([a-zA-Z0-9_-]+)(?:([~|^$*]?)=["']?([^"'\]]*?)["']?)?\])?(?::([a-z-]+)(?:\(([^)]+)\))?)?$/;
-    var m = part.match(re);
+    // Peel pseudos off the right (with paren/bracket-depth tracking so
+    // `:not(div:hover)`-style nested colons don't fool the splitter). The
+    // remainder is a bare tag#id.class[attr=val] simple selector — handled
+    // by the regex below. Supports chained pseudos like `div:has(p):not(.x)`.
+    var pseudos = [];
+    var s = part;
+    while (true) {
+      var depth = 0, lastColon = -1;
+      for (var i = 0; i < s.length; i++) {
+        var c = s[i];
+        if (c === '(' || c === '[') depth++;
+        else if (c === ')' || c === ']') depth--;
+        else if (c === ':' && depth === 0) lastColon = i;
+      }
+      if (lastColon === -1) break;
+      var psPart = s.slice(lastColon + 1);
+      var pm = psPart.match(/^([a-z-]+)(?:\((.+)\))?$/i);
+      if (!pm) break;
+      pseudos.unshift({ name: pm[1], arg: pm[2] });
+      s = s.slice(0, lastColon);
+    }
+
+    // Simple selector: tag#id.class[attr=val] or `*` (universal)
+    var re = /^(\*|[a-zA-Z0-9_-]*)?(?:#([a-zA-Z0-9_-]+))?(?:\.([a-zA-Z0-9_. -]+))?(?:\[([a-zA-Z0-9_-]+)(?:([~|^$*]?)=["']?([^"'\]]*?)["']?)?\])?$/;
+    var m = s.match(re);
     if (!m) return false;
 
     var tag = m[1], id = m[2], classes = m[3];
     var attrName = m[4], attrOp = m[5], attrVal = m[6];
-    var pseudoName = m[7], pseudoArg = m[8];
 
     // `*` matches any tag; non-empty tag must match exactly.
     if (tag && tag !== '*' && el.tagName !== tag.toUpperCase()) return false;
     if (id && el.id !== id) return false;
     if (classes) {
       var clsList = classes.split('.');
-      for (var i = 0; i < clsList.length; i++) {
-        if (clsList[i] && !el.classList.contains(clsList[i])) return false;
+      for (var ci = 0; ci < clsList.length; ci++) {
+        if (clsList[ci] && !el.classList.contains(clsList[ci])) return false;
       }
     }
     if (attrName) {
@@ -670,8 +725,8 @@
         else if (attrOp === '~') { if (val.split(/\s+/).indexOf(attrVal) === -1) return false; }
       }
     }
-    if (pseudoName) {
-      if (!matchesPseudo(el, pseudoName, pseudoArg)) return false;
+    for (var pi = 0; pi < pseudos.length; pi++) {
+      if (!matchesPseudo(el, pseudos[pi].name, pseudos[pi].arg)) return false;
     }
     return true;
   }
