@@ -8,24 +8,38 @@ echo '{"id":1,"method":"navigate","params":{"url":"https://news.ycombinator.com"
   | ./target/release/unchained_browser
 ```
 
-That's the install. ~10MB binary, ~50MB RAM/session, ~100ms cold start. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.
+That's the install. Runs anywhere a static binary runs — laptop, Lambda, Cloudflare Workers, edge, embedded.
 
 Open source under Apache 2.0. Hosted at **[unchainedsky.com](https://unchainedsky.com)** if you'd rather skip the ops.
 
 ---
 
-## Why
+## By the numbers
 
-Most agent web tasks don't need Chrome. They need:
+|                | This binary    | Headless Chrome (Playwright/Puppeteer) |
+|----------------|----------------|-----------------------------------------|
+| Binary size    | **~10MB**      | 250MB+ Chrome download                  |
+| RAM / session  | **~50MB**      | 200–500MB                                |
+| Cold start     | **~100ms**     | ~1s                                      |
+| Tokens / page (LLM) | **~500** (BlockMap inline) | tens of thousands of HTML, parsed by you |
+| Install steps  | `cargo build`  | install Chrome + Node + Playwright + system deps |
+| Lambda / Workers / edge | ✅      | ❌ Chrome too big                        |
+| 100K pages/day cost | $0 (your infra) | $$$ Chrome fleet or hosted API     |
 
-- A real Chrome TLS fingerprint (so sites don't block you)
-- A parsed DOM with CSS selectors
-- Cookies that persist across calls
-- A small, structured page summary the LLM can reason about
+**5–10× lower memory, 25× smaller binary, 10× faster cold start, 70× lower per-page token cost.** That's the tradeoff this product makes — defer JS-rendering (Phase 4/5) and pixel rendering (out of scope) in exchange for a footprint that fits in places Chrome doesn't.
 
-That's what this is. ~700 lines of Rust + ~1000 lines of embedded JS. No Playwright dependency, no headless Chrome download, no Selenium grid.
+## Agent-friendly by design
 
-For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the binary surfaces a `challenge` field on every blocked navigate and accepts cookies via `cookies_set` — so you can solve once in Chrome, replay forever here.
+This isn't a Chrome wrapper that an agent uses through a Puppeteer-shaped abstraction. It's a browser whose every output is shaped for LLM consumption:
+
+- **`navigate` returns a BlockMap** — ~500 tokens of structured page summary (landmarks, headings, interactives, density signals) right in the response. No follow-up call needed to know what's on the page.
+- **Stable element refs** (`e:142`) — query, click, type, submit using opaque handles. The LLM never has to scrape the DOM itself.
+- **`challenge` field on every blocked navigate** — provider, confidence, and the exact clearance cookie name. The agent reacts intelligently instead of guessing.
+- **`density.likely_js_filled` heuristic** — distinguishes "real SSR page" from "SSR shell with JS-filled cells" (the CNBC trap). The agent bails before burning round-trips on a page it can't read.
+- **MCP-native** — `unchained_browser --mcp` exposes 12 tools to any MCP host (Claude Code, Claude Desktop, Cursor, Cline). 4 lines of config, zero glue code.
+- **Real Chrome fingerprint** (Chrome 131 JA4 + Akamai H2 hash) so sites don't block you for being a script.
+
+For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the binary detects them and accepts cookies via `cookies_set` — so you solve once in Chrome and replay forever here.
 
 ## Quick demo — Hacker News top 3
 
