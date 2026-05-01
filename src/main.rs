@@ -477,31 +477,63 @@ impl Session {
             let items = collect_scripts(&tree, &final_url);
             let mut inline_count = 0usize;
             let mut external_count = 0usize;
-            let mut sources: Vec<String> = Vec::new();
             let mut fetch_errors: Vec<String> = Vec::new();
-            // Fetch external srcs serially via the same rquest::Client (cookies
-            // + TLS fingerprint stay coherent). Parallelism is a future optimization.
-            for item in items {
+
+            // Spawn external fetches in parallel — current_thread runtime
+            // interleaves them at network-I/O await points, so a page with
+            // N external bundles takes ~max(round-trip times) instead of
+            // sum(round-trip times). Document ordering is preserved by
+            // collecting results indexed by original position.
+            let mut fetch_tasks: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
+                Vec::new();
+            for (idx, item) in items.iter().enumerate() {
+                if let ScriptItem::External(u) = item {
+                    let url = u.clone();
+                    let http = self.http.clone();
+                    fetch_tasks.push((
+                        idx,
+                        tokio::spawn(async move {
+                            match http.get(&url).send().await {
+                                Ok(resp) if resp.status().is_success() => match resp.text().await {
+                                    Ok(body) => Ok(body),
+                                    Err(e) => Err(format!("read {url}: {e}")),
+                                },
+                                Ok(resp) => {
+                                    Err(format!("status {} fetching {}", resp.status(), url))
+                                }
+                                Err(e) => Err(format!("fetch {url}: {e}")),
+                            }
+                        }),
+                    ));
+                }
+            }
+            let mut external_results: HashMap<usize, String> = HashMap::new();
+            for (idx, task) in fetch_tasks {
+                match task.await {
+                    Ok(Ok(body)) => {
+                        external_results.insert(idx, body);
+                        external_count += 1;
+                    }
+                    Ok(Err(e)) => fetch_errors.push(e),
+                    Err(join_e) => fetch_errors.push(format!("task panicked: {join_e}")),
+                }
+            }
+
+            // Now assemble sources in document order: inline goes through
+            // unchanged, externals come from the parallel-fetch results map
+            // (skipped if their fetch failed).
+            let mut sources: Vec<String> = Vec::new();
+            for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     ScriptItem::Inline(s) => {
                         inline_count += 1;
                         sources.push(s);
                     }
-                    ScriptItem::External(u) => match self.http.get(&u).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            match resp.text().await {
-                                Ok(body) => {
-                                    external_count += 1;
-                                    sources.push(body);
-                                }
-                                Err(e) => fetch_errors.push(format!("read {u}: {e}")),
-                            }
+                    ScriptItem::External(_) => {
+                        if let Some(body) = external_results.remove(&idx) {
+                            sources.push(body);
                         }
-                        Ok(resp) => {
-                            fetch_errors.push(format!("status {} fetching {}", resp.status(), u))
-                        }
-                        Err(e) => fetch_errors.push(format!("fetch {u}: {e}")),
-                    },
+                    }
                 }
             }
             // Eval all in document order. Page scripts often end with an
