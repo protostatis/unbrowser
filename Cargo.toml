@@ -1,6 +1,6 @@
 [package]
 name = "unbrowser"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 description = "Web access for LLM agents. One static binary. No Chrome."
 license = "Apache-2.0"

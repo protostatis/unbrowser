@@ -121,7 +121,7 @@ jobs:
         # since the wheel bundles a platform-specific binary.
         run: |
           cd python/dist
-          python -m wheel tags --remove --platform-tag ${{ matrix.wheel_platform }} unbrowser-*-py3-none-any.whl
+          python -m wheel tags --remove --platform-tag ${{ matrix.wheel_platform }} pyunbrowser-*-py3-none-any.whl
           ls -la
 
       - name: Upload artifact
@@ -131,7 +131,7 @@ jobs:
           path: |
             unbrowser-${{ matrix.target }}.tar.gz
             unbrowser-${{ matrix.target }}.tar.gz.sha256
-            python/dist/unbrowser-*.whl
+            python/dist/pyunbrowser-*.whl
           if-no-files-found: error
           retention-days: 7
 
@@ -155,8 +155,8 @@ jobs:
       - name: Upload sdist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unbrowser-sdist
-          path: python/dist/unbrowser-*.tar.gz
+          name: pyunbrowser-sdist
+          path: python/dist/pyunbrowser-*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -191,13 +191,11 @@ jobs:
         # into a single dist/ that gh-action-pypi-publish expects.
         run: |
           mkdir -p dist
-          # wheels (one per platform target)
-          find dist-staging -name 'unbrowser-*.whl' -exec cp {} dist/ \;
-          # sdist (single)
-          find dist-staging -name 'unbrowser-*.tar.gz' \
-              -not -name 'unbrowser-*-apple-darwin.tar.gz' \
-              -not -name 'unbrowser-*-linux-gnu.tar.gz' \
-              -exec cp {} dist/ \;
+          # The PyPI distribution prefix is `pyunbrowser-*` (Python wheels +
+          # sdist); the native binary tarballs are `unbrowser-*-{target}.tar.gz`.
+          # Different prefixes mean a single find each — no exclusions needed.
+          find dist-staging -name 'pyunbrowser-*.whl' -exec cp {} dist/ \;
+          find dist-staging -name 'pyunbrowser-*.tar.gz' -exec cp {} dist/ \;
           ls -la dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
