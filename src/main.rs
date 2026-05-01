@@ -507,6 +507,7 @@ impl Session {
         req: rquest::RequestBuilder,
         exec_scripts: bool,
     ) -> Result<Value> {
+        let nav_start = std::time::Instant::now();
         let resp = req.send().await.context("http send")?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
@@ -533,6 +534,9 @@ impl Session {
         let bytes = body.len();
 
         let challenge = detect_challenge(status, &body);
+        if let Some(c) = &challenge {
+            emit_event("challenge", c.clone());
+        }
 
         let tree = parse_html_to_tree(&body);
         self.seed_dom(&tree)?;
@@ -687,6 +691,19 @@ impl Session {
         self.last_body = Some(body);
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
+
+        emit_event(
+            "navigate",
+            json!({
+                "url": final_url,
+                "status": status,
+                "bytes": bytes,
+                "elapsed_ms": nav_start.elapsed().as_millis() as u64,
+                "exec_scripts": exec_scripts,
+                "scripts_executed": scripts.as_ref().and_then(|s| s.get("executed")),
+                "scripts_interrupted": scripts.as_ref().and_then(|s| s.get("interrupted")),
+            }),
+        );
 
         Ok(json!({
             "status": status,
