@@ -90,7 +90,7 @@ Empirical, not aspirational. Latest matrix: **28/30** on tested categories.
 | **SSR + light hydration** (Next.js docs, marketing pages, react.dev's *static* content) | ✅ usable | reads SSR'd content fine; hydration adds nothing but doesn't break either |
 | **Bot-walled with cookie handoff** (Zillow, Cloudflare-protected sites) | ✅ via `cookies_set` | solve once in Chrome, replay forever; `challenge.provider` field tells the agent which vendor |
 | **Module-loader SPAs** (Ember, AMD apps like crates.io) | ⚠️ partial with `exec_scripts: true` | bundles fetch + execute, modules register, but framework auto-mount needs case-by-case shimming |
-| **Heavy React/Vue bundles** (react.dev runtime, large dashboard apps) | ⚠️ bounded — won't hang, won't render | with `exec_scripts: true` the navigate completes inside the 5s eval budget; rendered DOM may not materialize |
+| **Heavy React/Vue bundles** (react.dev runtime, large dashboard apps) | ⚠️ bounded — won't hang, won't render | with `exec_scripts: true` the navigate completes inside the 30s wall-clock budget (5s for the script-eval phase, the rest for settle); rendered DOM may not materialize. Tune via `UNBROWSE_TIMEOUT_MS` |
 | **Apps requiring Workers / Canvas / IndexedDB / WebGL** | ❌ out of scope by design | use the cookie-handoff path with real Chrome via [unchainedsky.com](https://unchainedsky.com) |
 | **Hardest-tier anti-bot** (PerimeterX with behavioral, Kasada, Akamai BMP advanced) | ❌ even cookie handoff is fragile | managed service is the right tier |
 
@@ -192,7 +192,8 @@ The vocabulary is the same. Code written against this binary works against the h
 
 ## Honest limits
 
-- **No page-script execution yet.** SPAs that render content client-side will return a JS shell. The blockmap exposes a `density.likely_js_filled` signal so agents can detect this in one call instead of burning round-trips.
+- **Script execution is opt-in via `exec_scripts: true`.** Default navigate skips it (the SSR/static path is what most agents want). With it on, inline + external `<script>` tags run in QuickJS — works for many SPAs, but heavy framework bootstraps (Ember, big React) often don't auto-mount because shims can't fake every browser-specific signal. The blockmap's `density.likely_js_filled` flag tells agents in one call when to escalate instead of burning round-trips.
+- **All eval is wall-clock bounded.** A 30s watchdog (configurable via `UNBROWSE_TIMEOUT_MS`, clamped to 1s..10min) covers script execution AND every subsequent settle/microtask/timer callback, so a hostile site can never wedge the binary or strand a CPU-pegged orphan process.
 - **GET-only form submit.** POST/multipart errors out — construct the request manually via `eval` or escalate.
 - **Hardest-tier bot detection** (PerimeterX with behavioral telemetry, advanced Akamai BMP, Kasada) needs the cookie-handoff path. The binary detects and labels the challenge for you, but solving it requires real Chrome (or a token vendor).
 - **No screenshots.** Out of scope by design.
