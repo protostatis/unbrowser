@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 const DOM_JS: &str = include_str!("js/dom.js");
+const SHIMS_JS: &str = include_str!("js/shims.js");
 const BLOCKMAP_JS: &str = include_str!("js/blockmap.js");
 const INTERACT_JS: &str = include_str!("js/interact.js");
 
@@ -190,11 +191,17 @@ impl Session {
             .redirect(rquest::redirect::Policy::limited(10))
             .build()
             .context("rquest client build")?;
-        // Install the DOM source: defines document, Element, querySelector, __seedDOM, etc.
-        // Then BlockMap (__blockmap) and interactivity helpers (__click, __type, __byRef, __formData).
+        // Install JS layers in order:
+        //   1. dom.js     — document, Element, querySelector, __seedDOM, etc.
+        //   2. shims.js   — passive browser globals (window, navigator, location,
+        //                   storage, etc.) — coherent with our Chrome 131 TLS FP
+        //   3. blockmap.js — __blockmap() page-summary walker
+        //   4. interact.js — __click, __type, __byRef, __formData
         js_ctx.with(|ctx| -> Result<()> {
             ctx.eval::<(), _>(DOM_JS)
                 .map_err(|e| anyhow!("eval dom.js: {e}"))?;
+            ctx.eval::<(), _>(SHIMS_JS)
+                .map_err(|e| anyhow!("eval shims.js: {e}"))?;
             ctx.eval::<(), _>(BLOCKMAP_JS)
                 .map_err(|e| anyhow!("eval blockmap.js: {e}"))?;
             ctx.eval::<(), _>(INTERACT_JS)
@@ -271,6 +278,10 @@ impl Session {
 
         let tree = parse_html_to_tree(&body);
         self.seed_dom(&tree)?;
+
+        // Update window.location for any page scripts that read it.
+        let url_lit = serde_json::to_string(&final_url)?;
+        let _ = self.eval(&format!("__setLocation({url_lit})"));
 
         self.last_url = Some(final_url.clone());
         self.last_body = Some(body);
