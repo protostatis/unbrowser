@@ -1253,12 +1253,23 @@ impl Session {
         let mut total_timers: u64 = 0;
         let mut total_fetches: u64 = 0;
 
+        // Why settle exited. "idle" is the success case (all queues drained);
+        // the others mean we hit a budget. Drivers can use this to pick a
+        // failure mode: budget_exhausted suggests bumping max_ms or skipping
+        // more scripts; max_iters suggests an infinite-microtask-loop
+        // pattern (very rare in practice, but happens with libraries that
+        // queueMicrotask in a loop). See PR review feedback / SPA proposal #6.
+        // Filled in at every break path — clippy enforces no implicit default.
+        let reason: &'static str;
+
         loop {
             if iters >= max_iters {
+                reason = "max_iters";
                 break;
             }
             let elapsed_ms = start.elapsed().as_millis() as u64;
             if elapsed_ms >= max_ms {
+                reason = "budget_exhausted";
                 break;
             }
 
@@ -1284,6 +1295,12 @@ impl Session {
             total_timers += fired;
 
             // 3. Drain fetch responses (resolves pending Promises JS-side).
+            // Note: pending_fetches covers BOTH JS-issued fetch()/XHR AND
+            // dynamic-script loads from PR #6's __maybeHandleDynamicScript
+            // (it routes through fetch). MutationObserver / IntersectionObserver
+            // / ResizeObserver callbacks (PR #8) fire via queueMicrotask, so
+            // they're covered by the microtask drain in step 1. We don't need
+            // separate pending counters for those.
             let resolved = self.eval("__pollFetches()")?.as_u64().unwrap_or(0);
             total_fetches += resolved;
 
@@ -1293,7 +1310,8 @@ impl Session {
             let microtasks_pending = self.js_rt.is_job_pending();
 
             if pending_timers == 0 && pending_fetches == 0 && !microtasks_pending {
-                break; // queue fully empty
+                reason = "idle";
+                break; // queue fully empty — the success case
             }
 
             let did_work_this_iter = mt_this_iter > 0 || fired > 0 || resolved > 0;
@@ -1331,7 +1349,17 @@ impl Session {
             "pending_timers": self.eval("__pendingTimers()")?.as_u64().unwrap_or(0),
             "pending_fetches": self.eval("__pendingFetches()")?.as_u64().unwrap_or(0),
             "pending_microtasks": self.js_rt.is_job_pending(),
-            "timed_out": iters >= max_iters || elapsed_ms >= max_ms,
+            // Why settle exited. One of:
+            //   "idle"             — all queues drained (success)
+            //   "budget_exhausted" — wall-clock max_ms hit
+            //   "max_iters"        — iteration cap hit (typically pathological microtask loop)
+            // Drivers should use this to choose a recovery action.
+            "reason": reason,
+            // Back-compat: timed_out=true matches either budget_exhausted or
+            // max_iters. New consumers should prefer `reason`. Kept so existing
+            // drivers (and the `policy_trace` consumers) don't break. Drop in
+            // a follow-up once everyone's migrated.
+            "timed_out": reason != "idle",
         }))
     }
 
