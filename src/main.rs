@@ -307,6 +307,12 @@ struct Session {
     // Read by the external-script fetch loop in navigate_with and by the
     // __host_fetch_send hook — see src/policy.rs.
     policy_block: bool,
+    // Monotonic counter for navigation_id. Each navigate() call increments
+    // and emits a navigation_started event with the new id. Subsequent
+    // events from that navigation (script_decision, policy_trace) carry
+    // the same id so a driver can join outcomes against decisions.
+    // See docs/probabilistic-policy.md §4.5 (outcome protocol).
+    nav_counter: AtomicU64,
 }
 
 impl Session {
@@ -463,7 +469,18 @@ impl Session {
             last_url: None,
             last_body: None,
             policy_block,
+            nav_counter: AtomicU64::new(0),
         })
+    }
+
+    // Generate the next navigation_id for events emitted by navigate_with.
+    // Format `nav_<n>` keeps it grep-friendly and short. Within a single
+    // session (process lifetime) ids are unique and monotonic; not globally
+    // unique — drivers that need cross-session correlation should pair this
+    // with their own session id.
+    fn next_nav_id(&self) -> String {
+        let n = self.nav_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("nav_{n}")
     }
 
     // Set a wall-clock deadline (ms from now) that bounds every JS eval until
@@ -545,9 +562,20 @@ impl Session {
         exec_scripts: bool,
     ) -> Result<Value> {
         let nav_start = std::time::Instant::now();
+        let nav_id = self.next_nav_id();
         let resp = req.send().await.context("http send")?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
+        emit_event(
+            "navigation_started",
+            json!({
+                "schema_version": 1,
+                "navigation_id": nav_id,
+                "url": final_url,
+                "exec_scripts": exec_scripts,
+                "policy_block": self.policy_block,
+            }),
+        );
 
         // Snapshot useful response headers before consuming the response body.
         // Multi-value headers (Set-Cookie) are joined with ' || ' since they're
@@ -608,10 +636,36 @@ impl Session {
             let mut fetch_tasks: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
                 Vec::new();
             for (idx, item) in items.iter().enumerate() {
-                if let ScriptItem::External { url: u, .. } = item {
+                if let ScriptItem::External { url: u, kind } = item {
+                    let host = url::Url::parse(u)
+                        .ok()
+                        .and_then(|p| p.host_str().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    let kind_str = match kind {
+                        ScriptKind::Sync => "sync",
+                        ScriptKind::Async => "async",
+                    };
                     if self.policy_block {
                         let d = policy::decide(u);
                         if d.blocked {
+                            // New canonical event — drivers should consume this.
+                            emit_event(
+                                "script_decision",
+                                json!({
+                                    "schema_version": 1,
+                                    "navigation_id": nav_id,
+                                    "script_id": idx,
+                                    "url": u,
+                                    "host": host,
+                                    "kind": kind_str,
+                                    "action": "skip_blocklist",
+                                    "category": d.category.map(|c| c.as_str()),
+                                    "matched": d.matched_pattern,
+                                }),
+                            );
+                            // Legacy event — kept for one cycle for back-compat
+                            // with policy_baseline.py / policy_e2e.py. Drop in
+                            // a follow-up PR once consumers have switched.
                             emit_event(
                                 "policy_blocked",
                                 json!({
@@ -687,14 +741,44 @@ impl Session {
             //                   collapses to "execute now in document order."
             let mut sync_sources: Vec<String> = Vec::new();
             let mut async_sources: Vec<String> = Vec::new();
+            let mut fetch_failed_count = 0usize;
             for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     ScriptItem::Inline(s) => {
                         inline_count += 1;
                         sync_sources.push(s);
                     }
-                    ScriptItem::External { kind, .. } => {
+                    ScriptItem::External { url, kind } => {
+                        // Re-check policy idempotently to know if this idx was
+                        // skipped at first-pass time. Cheaper than threading a
+                        // HashSet through; policy::decide is constant-time on
+                        // the hot path.
+                        let was_skipped = self.policy_block && policy::decide(&url).blocked;
+                        if was_skipped {
+                            // Already emitted script_decision(skip_blocklist) above.
+                            continue;
+                        }
+                        let host = url::Url::parse(&url)
+                            .ok()
+                            .and_then(|p| p.host_str().map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        let kind_str = match kind {
+                            ScriptKind::Sync => "sync",
+                            ScriptKind::Async => "async",
+                        };
                         if let Some(body) = external_results.remove(&idx) {
+                            emit_event(
+                                "script_decision",
+                                json!({
+                                    "schema_version": 1,
+                                    "navigation_id": nav_id,
+                                    "script_id": idx,
+                                    "url": url,
+                                    "host": host,
+                                    "kind": kind_str,
+                                    "action": "run",
+                                }),
+                            );
                             match kind {
                                 ScriptKind::Sync => sync_sources.push(body),
                                 ScriptKind::Async => {
@@ -702,6 +786,20 @@ impl Session {
                                     async_sources.push(body);
                                 }
                             }
+                        } else {
+                            fetch_failed_count += 1;
+                            emit_event(
+                                "script_decision",
+                                json!({
+                                    "schema_version": 1,
+                                    "navigation_id": nav_id,
+                                    "script_id": idx,
+                                    "url": url,
+                                    "host": host,
+                                    "kind": kind_str,
+                                    "action": "fetch_failed",
+                                }),
+                            );
                         }
                     }
                 }
@@ -752,11 +850,39 @@ impl Session {
             let after_dcl = self.settle(2000, 100).await.ok();
             let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
             let after_load = self.settle(1500, 50).await.ok();
+            // Phase A: per-navigation policy trace. One event summarizing
+            // every decision made during this navigate, joined to outcomes
+            // via navigation_id when the driver later calls report_outcome.
+            // See docs/probabilistic-policy.md §4.5.
+            emit_event(
+                "policy_trace",
+                json!({
+                    "schema_version": 1,
+                    "navigation_id": nav_id,
+                    "url": final_url,
+                    "policy_block": self.policy_block,
+                    "scripts": {
+                        "inline": inline_count,
+                        "external": external_count,
+                        "async": async_count,
+                        "skipped_blocklist": policy_blocked_count,
+                        "fetch_failed": fetch_failed_count,
+                        "executed": executed,
+                        "interrupted": interrupted,
+                    },
+                    "settle": {
+                        "after_dcl": after_dcl,
+                        "after_load": after_load,
+                    },
+                    "elapsed_ms": nav_start.elapsed().as_millis() as u64,
+                }),
+            );
             Some(json!({
                 "inline_count": inline_count,
                 "external_count": external_count,
                 "async_count": async_count,
                 "policy_blocked": policy_blocked_count,
+                "fetch_failed": fetch_failed_count,
                 "executed": executed,
                 "interrupted": interrupted,
                 "errors_count": eval_errors.len(),
@@ -767,6 +893,20 @@ impl Session {
                 "settle_after_load": after_load,
             }))
         } else {
+            // exec_scripts=false: still emit a minimal policy_trace so the
+            // driver always has a paired event for navigation_started.
+            emit_event(
+                "policy_trace",
+                json!({
+                    "schema_version": 1,
+                    "navigation_id": nav_id,
+                    "url": final_url,
+                    "policy_block": self.policy_block,
+                    "scripts": null,
+                    "settle": null,
+                    "elapsed_ms": nav_start.elapsed().as_millis() as u64,
+                }),
+            );
             None
         };
 
@@ -775,27 +915,6 @@ impl Session {
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
 
-        // Auto-extract on SPA-shell pages. When the blockmap density says the
-        // DOM looks like an unhydrated shell (likely_js_filled=true) AND there
-        // are JSON-bearing <script> tags to pull from (json_scripts>0), run
-        // __extract() inline so the agent gets embedded data (__NEXT_DATA__,
-        // JSON-LD, json_in_script, etc.) in one round trip instead of two.
-        // Healthy pages skip the call and pay zero extra cost. The agent can
-        // still call extract() explicitly to override or pick a strategy.
-        let density = blockmap.get("density");
-        let likely_js_filled = density
-            .and_then(|d| d.get("likely_js_filled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let json_scripts = density
-            .and_then(|d| d.get("json_scripts"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let auto_extract = if likely_js_filled && json_scripts > 0 {
-            self.extract(None).ok()
-        } else {
-            None
-        };
 
         emit_event(
             "navigate",
@@ -807,12 +926,11 @@ impl Session {
                 "exec_scripts": exec_scripts,
                 "scripts_executed": scripts.as_ref().and_then(|s| s.get("executed")),
                 "scripts_interrupted": scripts.as_ref().and_then(|s| s.get("interrupted")),
-                "auto_extract_strategy": auto_extract.as_ref().and_then(|e| e.get("strategy")),
-                "auto_extract_confidence": auto_extract.as_ref().and_then(|e| e.get("confidence")),
             }),
         );
 
         Ok(json!({
+            "navigation_id": nav_id,
             "status": status,
             "url": final_url,
             "bytes": bytes,
@@ -820,7 +938,6 @@ impl Session {
             "blockmap": blockmap,
             "challenge": challenge,
             "scripts": scripts,
-            "extract": auto_extract,
         }))
     }
 
@@ -1691,6 +1808,34 @@ fn emit_event(name: &str, fields: Value) {
     eprintln!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
 
+// Phase A: shared between rpc_main and dispatch_tool. Emits the
+// `outcome_reported` NDJSON event from a report_outcome RPC call. v0 just
+// records the outcome — no posterior updates yet (see
+// docs/probabilistic-policy.md §4.5 for the protocol). Drivers should
+// pass the navigation_id returned by navigate.
+fn emit_outcome(params: &Value, nav_id: &str) {
+    let task_id = params.get("task_id").and_then(|v| v.as_str());
+    let task_class = params.get("task_class").and_then(|v| v.as_str());
+    let success = params
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let quality = params.get("quality").and_then(|v| v.as_f64());
+    let error = params.get("error").and_then(|v| v.as_str());
+    emit_event(
+        "outcome_reported",
+        json!({
+            "schema_version": 1,
+            "navigation_id": nav_id,
+            "task_id": task_id,
+            "task_class": task_class,
+            "success": success,
+            "quality": quality,
+            "error": error,
+        }),
+    );
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -2003,6 +2148,20 @@ async fn rpc_main(profile: Profile) -> Result<()> {
                 session.jar.clear();
                 ok_response(id, json!({ "ok": true }))
             }
+            "report_outcome" => {
+                let nav_id = req
+                    .params
+                    .get("navigation_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if nav_id.is_empty() {
+                    err_response(id, -32602, "missing 'navigation_id' param")
+                } else {
+                    emit_outcome(&req.params, &nav_id);
+                    ok_response(id, json!({ "ok": true }))
+                }
+            }
             "close" => {
                 write_response(&mut out, &ok_response(id, json!("bye")))?;
                 return Ok(());
@@ -2027,7 +2186,7 @@ fn mcp_tools() -> Value {
     json!([
         {
             "name": "navigate",
-            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, extracts inline AND external <script> tags from the parsed HTML, fetches externals in parallel (8s per-fetch timeout), eval's them in document order in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. `<script async>` is honored: async scripts execute after the sync queue. When `--policy=blocklist` is set, tracker URLs are blocked at script-fetch time (see scripts.policy_blocked in the result). Returns a `scripts` summary with inline_count, external_count, async_count, policy_blocked, executed, errors.\n\nSPA-shell auto-extract: the BlockMap's `density.likely_js_filled` flags pages that look like an unhydrated shell (empty tables/lists, thin top-level structure, framework chrome but no rendered content). When that's true AND `density.json_scripts > 0` (page embeds data in <script type=application/json | application/ld+json | text/x-magento-init | ...>), navigate auto-runs `extract()` and returns the result as the `extract` field — collapsing the see-shell-then-extract two-step into one round trip on Next.js / Magento / Shopify / JSON-LD pages where the data the JS would have rendered is already sitting in the HTML. On healthy pages `extract` is null and there is no extra cost.",
+            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, extracts inline AND external <script> tags from the parsed HTML, fetches externals in parallel (8s per-fetch timeout), eval's them in document order in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. `<script async>` is honored: async scripts execute after the sync queue. When `--policy=blocklist` is set, tracker URLs are blocked at script-fetch time (see scripts.policy_blocked in the result). Returns a `scripts` summary with inline_count, external_count, async_count, policy_blocked, executed, errors.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2188,6 +2347,22 @@ fn mcp_tools() -> Value {
             "name": "cookies_clear",
             "description": "Drop all cookies from the jar.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "report_outcome",
+            "description": "Bind a task outcome (success/failure/quality) to a previous navigation_id from a navigate() call. Used by the policy framework's outcome protocol — see docs/probabilistic-policy.md §4.5. v0 emits an outcome_reported NDJSON event for the navigation; no posterior updates yet. Drivers should call this once per agent task so future Bayesian phases (B/D-2) can attribute extraction success/failure to specific policy decisions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "navigation_id": { "type": "string", "description": "The id returned by navigate() — joins this outcome to the policy_trace event." },
+                    "task_id":       { "type": "string", "description": "Optional opaque id chosen by the driver for cross-system correlation." },
+                    "task_class":    { "type": "string", "enum": ["extract", "query", "click", "form", "visual"], "description": "What kind of task succeeded/failed. Lets future posteriors condition on task class." },
+                    "success":       { "type": "boolean", "description": "Did the agent's task succeed?" },
+                    "quality":       { "type": "number", "description": "Optional 0..1 quality score (e.g. fraction of expected fields extracted)." },
+                    "error":         { "type": "string", "description": "Optional human-readable error/explanation when success=false." }
+                },
+                "required": ["navigation_id", "success"]
+            }
         }
     ])
 }
@@ -2275,6 +2450,12 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
         "cookies_get" => Ok(Value::Array(session.jar.export())),
         "cookies_clear" => {
             session.jar.clear();
+            Ok(json!({ "ok": true }))
+        }
+        "report_outcome" => {
+            let nav_id =
+                str_arg("navigation_id").ok_or_else(|| anyhow!("missing 'navigation_id'"))?;
+            emit_outcome(args, nav_id);
             Ok(json!({ "ok": true }))
         }
         _ => Err(anyhow!("unknown tool: {name}")),
