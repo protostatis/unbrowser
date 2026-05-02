@@ -692,23 +692,24 @@ impl Session {
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
 
-        // Auto-extract on SPA-shell pages. When the blockmap density says the
-        // DOM looks like an unhydrated shell (likely_js_filled=true) AND there
-        // are JSON-bearing <script> tags to pull from (json_scripts>0), run
-        // __extract() inline so the agent gets embedded data (__NEXT_DATA__,
-        // JSON-LD, json_in_script, etc.) in one round trip instead of two.
-        // Healthy pages skip the call and pay zero extra cost. The agent can
-        // still call extract() explicitly to override or pick a strategy.
-        let density = blockmap.get("density");
-        let likely_js_filled = density
-            .and_then(|d| d.get("likely_js_filled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let json_scripts = density
+        // Auto-extract whenever the page embeds JSON-bearing <script> tags
+        // (density.json_scripts > 0). Across a 32-site sweep this delivers
+        // substantial structured data (JSON-LD article schemas, __NEXT_DATA__
+        // page state, json_in_script product blobs, GitHub RSC payloads) on
+        // ~15/20 sites where the agent would otherwise have to issue a second
+        // extract() call. The earlier conjunctive gate on `likely_js_filled`
+        // was empirically inert: shell-shaped pages and JSON-bearing pages are
+        // anti-correlated in the wild — if a site is a thin shell it usually
+        // fetches data later via XHR; if it embeds JSON it usually rendered
+        // enough HTML to not look like a shell. __extract() is a sync QuickJS
+        // eval over the already-parsed DOM (no network, no re-parse), so the
+        // overhead on pages where extract just returns og_meta is negligible.
+        let json_scripts = blockmap
+            .get("density")
             .and_then(|d| d.get("json_scripts"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let auto_extract = if likely_js_filled && json_scripts > 0 {
+        let auto_extract = if json_scripts > 0 {
             self.extract(None).ok()
         } else {
             None
@@ -1858,7 +1859,7 @@ fn mcp_tools() -> Value {
     json!([
         {
             "name": "navigate",
-            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, also extracts inline <script> tags from the parsed HTML, eval's them in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. Returns a `scripts` summary with executed/errors when exec_scripts is true.\n\nSPA-shell auto-extract: the BlockMap's `density.likely_js_filled` flags pages that look like an unhydrated shell (empty tables/lists, thin top-level structure, framework chrome but no rendered content). When that's true AND `density.json_scripts > 0` (page embeds data in <script type=application/json | application/ld+json | text/x-magento-init | ...>), navigate auto-runs `extract()` and returns the result as the `extract` field — collapsing the see-shell-then-extract two-step into one round trip on Next.js / Magento / Shopify / JSON-LD pages where the data the JS would have rendered is already sitting in the HTML. On healthy pages `extract` is null and there is no extra cost.",
+            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, also extracts inline <script> tags from the parsed HTML, eval's them in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. Returns a `scripts` summary with executed/errors when exec_scripts is true.\n\nAuto-extract: when the page embeds JSON-bearing <script> tags (density.json_scripts > 0 — covers application/json, application/ld+json, text/x-magento-init, text/x-shopify-app, etc.), navigate auto-runs `extract()` and returns the result as the `extract` field. Saves a round trip on the common case where the data the JS would have rendered is already sitting in the HTML — JSON-LD article schemas on news sites, __NEXT_DATA__ page state on Next.js apps, json_in_script product blobs on Magento/Shopify, GitHub RSC payloads, etc. Pages with no embedded JSON (density.json_scripts == 0) get extract:null and pay zero extra cost. The agent can still call extract() explicitly to force a specific strategy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
