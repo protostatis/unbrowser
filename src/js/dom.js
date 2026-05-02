@@ -6,15 +6,34 @@
   // --- Mutation Recording ---
   var __mutations = [];
   var __nextId = 1;
+  // id → node registry, populated in Node constructor. Lets external
+  // consumers (notably the MutationObserver shim in shims.js) resolve
+  // a mutation's parentId/childId/id back to the actual Node object so
+  // MutationRecord.target / addedNodes / removedNodes are populated.
+  // Cleared on __seedDOM. Plain object — Map would be cleaner but we
+  // already use object-as-dict patterns elsewhere in this file.
+  var __nodeRegistry = {};
 
   function recordMutation(mutation) {
     __mutations.push(mutation);
+    // Notify content-positive MutationObservers (installed by shims.js)
+    // immediately. Stub is no-op until shims.js installs the real one.
+    if (typeof globalThis.__notifyMutationObservers === 'function') {
+      try { globalThis.__notifyMutationObservers(mutation); } catch (e) {}
+    }
   }
 
   globalThis.__getMutations = function() {
     var m = __mutations;
     __mutations = [];
     return m;
+  };
+
+  // Expose the id → node registry so the MutationObserver shim can
+  // resolve mutation ids back to Node references for the MutationRecord
+  // target/addedNodes/removedNodes fields.
+  globalThis.__nodeById = function(id) {
+    return __nodeRegistry[id] || null;
   };
 
   // --- Node Types ---
@@ -193,6 +212,7 @@
     this.parentNode = null;
     this.childNodes = [];
     this.ownerDocument = null;
+    __nodeRegistry[this._id] = this;
   }
 
   Node.prototype = Object.create(EventTarget.prototype);
@@ -359,7 +379,16 @@
     if (idx === -1) throw new Error('Node not found');
     this.childNodes.splice(idx, 1);
     child.parentNode = null;
+    // Record + notify FIRST so MutationObserver records resolve the
+    // removed node via __nodeById before we drop it.
     recordMutation({ type: 'removeChild', parentId: this._id, childId: child._id });
+    // Drop from registry so detached subtrees don't accumulate over a
+    // long-running navigation. (PR #8 review medium.) Direct child only —
+    // descendants remain referenced by the detached parent until the next
+    // __seedDOM clears the whole registry. Acceptable trade for simplicity:
+    // observers still resolve the immediate removed node, and the bounded
+    // per-navigate cleanup means there's no cross-navigate leak.
+    delete __nodeRegistry[child._id];
     return child;
   };
 
@@ -1030,9 +1059,26 @@
 
   // --- Seed DOM from parsed JSON tree ---
   globalThis.__seedDOM = function(tree) {
+    // Disconnect any MutationObservers from the previous navigation. They
+    // were registered against page A's nodes and would otherwise fire on
+    // page B's mutations during this seed call (and beyond), running
+    // page A's callback against page B's data. (PR #8 review HIGH.)
+    // Hook is a no-op until shims.js installs it; safe to call before.
+    if (typeof globalThis.__resetActiveMutationObservers === 'function') {
+      try { globalThis.__resetActiveMutationObservers(); } catch (e) {}
+    }
+
     // Clear existing
     bodyEl.childNodes = [];
     headEl.childNodes = [];
+    // Clear node registry — surviving nodes (htmlEl, headEl, bodyEl,
+    // documentEl) reinsert themselves below via Element / Node
+    // constructors during buildChildren. Stale nodes from a previous
+    // navigate would otherwise accumulate.
+    __nodeRegistry = {};
+    __nodeRegistry[htmlEl._id] = htmlEl;
+    __nodeRegistry[headEl._id] = headEl;
+    __nodeRegistry[bodyEl._id] = bodyEl;
 
     if (tree.tag === 'html') {
       for (var i = 0; i < (tree.children || []).length; i++) {

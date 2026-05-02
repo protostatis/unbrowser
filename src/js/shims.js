@@ -336,15 +336,251 @@
     };
   };
 
-  // ---- Observers (no-op, prevent crashes) -------------------------------
+  // ---- Observers (content-positive: fire callbacks so page logic proceeds)
+  //
+  // Previous implementation was NoopObserver — never fired callbacks.
+  // That broke any page that gates rendering on observer events:
+  //   - lazy-load grids waiting for IntersectionObserver(isIntersecting=true)
+  //   - hydration paths waiting for MutationObserver to confirm DOM changed
+  //   - layout-driven UI waiting for ResizeObserver
+  // The page would settle with empty content because the "I am ready"
+  // callback never ran.
+  //
+  // Content-positive defaults:
+  //   IntersectionObserver: fire once per observed target with
+  //     isIntersecting=true (we don't render — everything is "in view").
+  //     Unlocks lazy-load.
+  //   ResizeObserver: fire once per observed target with viewport-ish
+  //     dimensions. Unlocks layout-conditioned content.
+  //   MutationObserver: actually notice DOM mutations. Records routed
+  //     from dom.js's recordMutation via __notifyMutationObservers,
+  //     converted to MutationRecord shape, fired async via microtask.
+  //   PerformanceObserver: stays no-op — we don't generate perf entries
+  //     and pages don't gate content on them.
+  //
+  // Fire timing: queueMicrotask matches browser semantics (callbacks
+  // are not synchronous w.r.t. the observe()/mutation call site).
+
+  // Synthetic dimensions for the viewport — match the screen dims set
+  // earlier in this file so a page reading both stays coherent.
+  var VIEWPORT_W = 1280;
+  var VIEWPORT_H = 800;
+
+  function syntheticBoundingRect() {
+    return {
+      x: 0, y: 0, width: VIEWPORT_W, height: VIEWPORT_H,
+      top: 0, right: VIEWPORT_W, bottom: VIEWPORT_H, left: 0,
+      toJSON: function() { return this; },
+    };
+  }
+
+  function IntersectionObserver(callback, options) {
+    this._callback = callback;
+    this._options = options || {};
+    this._observed = [];
+  }
+  IntersectionObserver.prototype.observe = function(target) {
+    if (this._observed.indexOf(target) === -1) this._observed.push(target);
+    var cb = this._callback;
+    var self = this;
+    queueMicrotask(function() {
+      try {
+        cb([{
+          isIntersecting: true,
+          intersectionRatio: 1,
+          target: target,
+          time: performance.now(),
+          boundingClientRect: syntheticBoundingRect(),
+          intersectionRect: syntheticBoundingRect(),
+          rootBounds: syntheticBoundingRect(),
+        }], self);
+      } catch (e) {}
+    });
+  };
+  IntersectionObserver.prototype.unobserve = function(target) {
+    var i = this._observed.indexOf(target);
+    if (i !== -1) this._observed.splice(i, 1);
+  };
+  IntersectionObserver.prototype.disconnect = function() { this._observed = []; };
+  IntersectionObserver.prototype.takeRecords = function() { return []; };
+  globalThis.IntersectionObserver = IntersectionObserver;
+
+  function ResizeObserver(callback) {
+    this._callback = callback;
+    this._observed = [];
+  }
+  ResizeObserver.prototype.observe = function(target) {
+    if (this._observed.indexOf(target) === -1) this._observed.push(target);
+    var cb = this._callback;
+    var self = this;
+    queueMicrotask(function() {
+      try {
+        cb([{
+          target: target,
+          contentRect: syntheticBoundingRect(),
+          borderBoxSize: [{ inlineSize: VIEWPORT_W, blockSize: VIEWPORT_H }],
+          contentBoxSize: [{ inlineSize: VIEWPORT_W, blockSize: VIEWPORT_H }],
+          devicePixelContentBoxSize: [{ inlineSize: VIEWPORT_W, blockSize: VIEWPORT_H }],
+        }], self);
+      } catch (e) {}
+    });
+  };
+  ResizeObserver.prototype.unobserve = function(target) {
+    var i = this._observed.indexOf(target);
+    if (i !== -1) this._observed.splice(i, 1);
+  };
+  ResizeObserver.prototype.disconnect = function() { this._observed = []; };
+  globalThis.ResizeObserver = ResizeObserver;
+
+  // MutationObserver — notified by dom.js's recordMutation via
+  // __notifyMutationObservers. Each observer keeps a queue and fires
+  // its callback once per microtask checkpoint (matches browser
+  // batching semantics).
+  //
+  // For v1 we don't filter by observed-target subtree — every active
+  // observer gets every mutation. This is over-firing but practically
+  // works because page code typically filters records itself ("did
+  // this specific node appear"). Subtree filtering is a follow-up.
+  var __activeMutationObservers = [];
+
+  function MutationObserver(callback) {
+    this._callback = callback;
+    this._records = [];
+    this._observed = [];   // [{ target, options }]
+    this._scheduled = false;
+  }
+  MutationObserver.prototype.observe = function(target, options) {
+    this._observed.push({ target: target, options: options || {} });
+    if (__activeMutationObservers.indexOf(this) === -1) {
+      __activeMutationObservers.push(this);
+    }
+  };
+  MutationObserver.prototype.disconnect = function() {
+    this._observed = [];
+    var i = __activeMutationObservers.indexOf(this);
+    if (i !== -1) __activeMutationObservers.splice(i, 1);
+  };
+  MutationObserver.prototype.takeRecords = function() {
+    var r = this._records;
+    this._records = [];
+    return r;
+  };
+  MutationObserver.prototype._enqueue = function(record) {
+    this._records.push(record);
+    if (this._scheduled) return;
+    this._scheduled = true;
+    var self = this;
+    queueMicrotask(function() {
+      self._scheduled = false;
+      var records = self._records;
+      self._records = [];
+      if (records.length === 0) return;
+      try { self._callback(records, self); } catch (e) {}
+    });
+  };
+  globalThis.MutationObserver = MutationObserver;
+
+  // Convert a dom.js internal mutation to a WHATWG MutationRecord.
+  // Returns null for mutation types that don't map to a record.
+  function toMutationRecord(m) {
+    var byId = (typeof __nodeById === 'function') ? __nodeById : function() { return null; };
+    if (m.type === 'appendChild' || m.type === 'insertBefore') {
+      var added = byId(m.childId);
+      return {
+        type: 'childList',
+        target: byId(m.parentId),
+        addedNodes: added ? [added] : [],
+        removedNodes: [],
+        previousSibling: null,
+        nextSibling: null,
+        attributeName: null,
+        attributeNamespace: null,
+        oldValue: null,
+      };
+    }
+    if (m.type === 'removeChild') {
+      var removed = byId(m.childId);
+      return {
+        type: 'childList',
+        target: byId(m.parentId),
+        addedNodes: [],
+        removedNodes: removed ? [removed] : [],
+        previousSibling: null,
+        nextSibling: null,
+        attributeName: null,
+        attributeNamespace: null,
+        oldValue: null,
+      };
+    }
+    if (m.type === 'setAttribute' || m.type === 'removeAttribute') {
+      return {
+        type: 'attributes',
+        target: byId(m.id),
+        addedNodes: [],
+        removedNodes: [],
+        previousSibling: null,
+        nextSibling: null,
+        attributeName: m.name || null,
+        attributeNamespace: null,
+        oldValue: null,
+      };
+    }
+    if (m.type === 'setTextContent') {
+      return {
+        type: 'characterData',
+        target: byId(m.id),
+        addedNodes: [],
+        removedNodes: [],
+        previousSibling: null,
+        nextSibling: null,
+        attributeName: null,
+        attributeNamespace: null,
+        oldValue: null,
+      };
+    }
+    // setStyle isn't a MutationRecord type; modern browsers expose this
+    // via the style attribute observer. We skip — pages observing style
+    // changes are rare and we'd need to model attribute mutations on
+    // 'style' specifically. Follow-up if it shows up in test data.
+    return null;
+  }
+
+  globalThis.__notifyMutationObservers = function(internalMutation) {
+    if (__activeMutationObservers.length === 0) return;
+    var record = toMutationRecord(internalMutation);
+    if (!record) return;
+    for (var i = 0; i < __activeMutationObservers.length; i++) {
+      __activeMutationObservers[i]._enqueue(record);
+    }
+  };
+
+  // Cross-navigate cleanup. dom.js's __seedDOM clears __nodeRegistry; we
+  // additionally need to disconnect any MutationObservers registered by
+  // the previous page's scripts so their callbacks don't fire on the new
+  // page's mutations (PR #8 review HIGH). Pending records on each are
+  // also dropped — they reference now-detached nodes and would surface
+  // page A data inside page B's callback. The corresponding hook lives in
+  // dom.js's __seedDOM.
+  globalThis.__resetActiveMutationObservers = function() {
+    for (var i = 0; i < __activeMutationObservers.length; i++) {
+      var o = __activeMutationObservers[i];
+      o._observed = [];
+      o._records = [];
+      o._scheduled = false;
+    }
+    __activeMutationObservers = [];
+  };
+
+  // PerformanceObserver stays no-op. We don't generate perf entries and
+  // pages don't gate content delivery on them. Kept as a small unused
+  // class because the ContentKind-style enum split for these doesn't
+  // earn its keep — a future PerformanceObserver implementation would
+  // be its own thing. (PR #8 review LOW: comment cleaned up.)
   function NoopObserver() {}
   NoopObserver.prototype.observe = function() {};
   NoopObserver.prototype.unobserve = function() {};
   NoopObserver.prototype.disconnect = function() {};
   NoopObserver.prototype.takeRecords = function() { return []; };
-  globalThis.ResizeObserver = NoopObserver;
-  globalThis.IntersectionObserver = NoopObserver;
-  globalThis.MutationObserver = NoopObserver;
   globalThis.PerformanceObserver = NoopObserver;
 
   // ---- atob / btoa ------------------------------------------------------
