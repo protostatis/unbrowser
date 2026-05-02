@@ -1,0 +1,525 @@
+[
+  {
+    "url": "https://news.ycombinator.com/",
+    "status": 200,
+    "bytes": 34618,
+    "nav_ms": 629.4,
+    "total_scripts": 1,
+    "src_scripts": 1,
+    "inline_scripts": 0,
+    "unique_hosts": 1,
+    "would_block": 0,
+    "would_block_pct": 0.0,
+    "by_category": {},
+    "blocked_patterns": {},
+    "all_hosts": [
+      [
+        "news.ycombinator.com",
+        1
+      ]
+    ],
+    "decisions": [
+      {
+        "url": "https://news.ycombinator.com/hn.js?nEwVfjwPQgOgNyE47N3K",
+        "host": "news.ycombinator.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      }
+    ]
+  },
+  {
+    "url": "https://www.cnbc.com/markets/",
+    "status": 200,
+    "bytes": 1545827,
+    "nav_ms": 976.9,
+    "total_scripts": 6,
+    "src_scripts": 2,
+    "inline_scripts": 4,
+    "unique_hosts": 2,
+    "would_block": 1,
+    "would_block_pct": 50.0,
+    "by_category": {
+      "tag_manager": 1
+    },
+    "blocked_patterns": {
+      "assets.adobedtm.com": 1
+    },
+    "all_hosts": [
+      [
+        "assets.adobedtm.com",
+        1
+      ],
+      [
+        "zephr-templates.cnbc.com",
+        1
+      ]
+    ],
+    "decisions": [
+      {
+        "url": "https://assets.adobedtm.com/77ca722dd820/bbaaa56c8833/launch-50229149d3cf.min.js",
+        "host": "assets.adobedtm.com",
+        "decision": "block",
+        "category": "tag_manager",
+        "matched": "assets.adobedtm.com"
+      },
+      {
+        "url": "https://zephr-templates.cnbc.com/integration.js",
+        "host": "zephr-templates.cnbc.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      }
+    ]
+  },
+  {
+    "url": "https://www.forbes.com/",
+    "status": 200,
+    "bytes": 799092,
+    "nav_ms": 1020.6,
+    "total_scripts": 28,
+    "src_scripts": 21,
+    "inline_scripts": 7,
+    "unique_hosts": 2,
+    "would_block": 1,
+    "would_block_pct": 4.8,
+    "by_category": {
+      "consent_cmp": 1
+    },
+    "blocked_patterns": {
+      "cdn.ketchjs.com": 1
+    },
+    "all_hosts": [
+      [
+        "i.forbesimg.com",
+        20
+      ],
+      [
+        "cdn.ketchjs.com",
+        1
+      ]
+    ],
+    "decisions": [
+      {
+        "url": "https://cdn.ketchjs.com/plugins/v1/tcf/stub.js",
+        "host": "cdn.ketchjs.com",
+        "decision": "block",
+        "category": "consent_cmp",
+        "matched": "cdn.ketchjs.com"
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/polyfills-42372ed130431b0a.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/webpack-255ae2a1c7793a5d.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/framework-f30cbadcebab7629.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/main-a6004c5457d0f87b.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/pages/_app-86e4a0fac32c82b6.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/6cdf2dfb-feb8d9c97c521f8c.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/1574-ede27c6a84137ab5.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/7235-97c575c28a7c10cd.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/21-71a34b7613454ce3.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/6349-04860aba9bac07c2.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/9204-3d7285779f7e0f1f.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/9946-46abaea941fcbcfe.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/347-e8eb059feb237709.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/82-db37d085da37e59f.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/5903-898e36815811f51c.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/786-8dd131e762891fdd.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/9006-413a79a03178c12c.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/chunks/pages/homepage-6343bb4585b40a6f.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/7oBh6f8egwamZivoGT3MO/_buildManifest.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://i.forbesimg.com/simple-site/_next/static/7oBh6f8egwamZivoGT3MO/_ssgManifest.js",
+        "host": "i.forbesimg.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      }
+    ]
+  },
+  {
+    "url": "https://en.wikipedia.org/wiki/Bayesian_inference",
+    "status": 200,
+    "bytes": 585348,
+    "nav_ms": 1956.0,
+    "total_scripts": 5,
+    "src_scripts": 1,
+    "inline_scripts": 4,
+    "unique_hosts": 1,
+    "would_block": 0,
+    "would_block_pct": 0.0,
+    "by_category": {},
+    "blocked_patterns": {},
+    "all_hosts": [
+      [
+        "en.wikipedia.org",
+        1
+      ]
+    ],
+    "decisions": [
+      {
+        "url": "https://en.wikipedia.org/w/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector-2022",
+        "host": "en.wikipedia.org",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      }
+    ]
+  },
+  {
+    "url": "https://www.theverge.com/",
+    "status": 200,
+    "bytes": 1100508,
+    "nav_ms": 690.1,
+    "total_scripts": 30,
+    "src_scripts": 25,
+    "inline_scripts": 5,
+    "unique_hosts": 10,
+    "would_block": 7,
+    "would_block_pct": 28.0,
+    "by_category": {
+      "ads": 5,
+      "consent_cmp": 1,
+      "tag_manager": 1
+    },
+    "blocked_patterns": {
+      "config.aps.amazon-adsystem.com": 1,
+      "client.aps.amazon-adsystem.com": 1,
+      "cdn.cookielaw.org": 1,
+      "googletagservices.com": 1,
+      "cdn.concert.io": 2,
+      "pub.doubleverify.com": 1
+    },
+    "all_hosts": [
+      [
+        "www.theverge.com",
+        15
+      ],
+      [
+        "cdn.concert.io",
+        2
+      ],
+      [
+        "config.aps.amazon-adsystem.com",
+        1
+      ],
+      [
+        "client.aps.amazon-adsystem.com",
+        1
+      ],
+      [
+        "www.google.com",
+        1
+      ],
+      [
+        "cdn.cookielaw.org",
+        1
+      ],
+      [
+        "www.googletagservices.com",
+        1
+      ],
+      [
+        "pub.doubleverify.com",
+        1
+      ],
+      [
+        "assets.zephr.com",
+        1
+      ],
+      [
+        "cdn.bullwhip.cloud",
+        1
+      ]
+    ],
+    "decisions": [
+      {
+        "url": "https://config.aps.amazon-adsystem.com/configs/3176",
+        "host": "config.aps.amazon-adsystem.com",
+        "decision": "block",
+        "category": "ads",
+        "matched": "config.aps.amazon-adsystem.com"
+      },
+      {
+        "url": "https://client.aps.amazon-adsystem.com/publisher.js",
+        "host": "client.aps.amazon-adsystem.com",
+        "decision": "block",
+        "category": "ads",
+        "matched": "client.aps.amazon-adsystem.com"
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/polyfills-42372ed130431b0a.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.google.com/recaptcha/api.js?render=6LeCFmwfAAAAAA4qBtkgg3WVJWVYGkt05yKT6gi1",
+        "host": "www.google.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js",
+        "host": "cdn.cookielaw.org",
+        "decision": "block",
+        "category": "consent_cmp",
+        "matched": "cdn.cookielaw.org"
+      },
+      {
+        "url": "https://www.googletagservices.com/tag/js/gpt.js",
+        "host": "www.googletagservices.com",
+        "decision": "block",
+        "category": "tag_manager",
+        "matched": "googletagservices.com"
+      },
+      {
+        "url": "https://cdn.concert.io/lib/concert-ads/v2-latest/concert_ads.js",
+        "host": "cdn.concert.io",
+        "decision": "block",
+        "category": "ads",
+        "matched": "cdn.concert.io"
+      },
+      {
+        "url": "https://cdn.concert.io/lib/concert-concierge.2.10.1.min.js",
+        "host": "cdn.concert.io",
+        "decision": "block",
+        "category": "ads",
+        "matched": "cdn.concert.io"
+      },
+      {
+        "url": "https://pub.doubleverify.com/dvtag/21236410/DV464041/pub.js",
+        "host": "pub.doubleverify.com",
+        "decision": "block",
+        "category": "ads",
+        "matched": "pub.doubleverify.com"
+      },
+      {
+        "url": "https://assets.zephr.com/zephr-browser/1.9.1/zephr-browser.umd.js",
+        "host": "assets.zephr.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://cdn.bullwhip.cloud/sonar/vox-verge.umd.js",
+        "host": "cdn.bullwhip.cloud",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/webpack-ac35baf79876390e.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/framework-8e0f3cf51af7b1e2.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/main-2d72d2950d961b0b.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/pages/_app-b8412cfda5b1b92c.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/6172-43228e69e28bd10a.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/5517-5677154977fde976.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/3409-5736a6430761d8d5.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/9036-adf697106c3d3af5.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/4869-c0f1d74b5d0e9b4b.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/7124-6cf7df40b9d15f20.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/1242-116431adb0ca7c8f.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/chunks/pages/resource/homepage-1ad2844662a75c4c.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/O_sGu7VlIF_acehEyONGL/_buildManifest.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      },
+      {
+        "url": "https://www.theverge.com/_next/static/O_sGu7VlIF_acehEyONGL/_ssgManifest.js",
+        "host": "www.theverge.com",
+        "decision": "allow",
+        "category": null,
+        "matched": null
+      }
+    ]
+  }
+]
