@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+mod policy;
 mod profile;
 use profile::Profile;
 
@@ -305,7 +306,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(profile: &Profile) -> Result<Self> {
+    fn new(profile: &Profile, policy_block: bool) -> Result<Self> {
         let js_rt = rquickjs::Runtime::new().context("rquickjs Runtime::new")?;
         let js_ctx = rquickjs::Context::full(&js_rt).context("rquickjs Context::full")?;
 
@@ -369,10 +370,41 @@ impl Session {
             // __host_fetch_send(id, method, url, headers_json, body) — fire-and-forget.
             // headers_json is a JSON-encoded string from JS to avoid converting
             // an rquickjs Object inside the host closure.
+            //
+            // Policy hook: when policy_block is on, decide(url) gates the send.
+            // Blocked URLs short-circuit with a synthetic 204 pushed straight
+            // into the results queue — JS sees the same Promise resolution
+            // shape it would for a network-completed request, just with empty
+            // body and no actual HTTP made. See src/policy.rs.
             let sender = fetch.sender.clone();
+            let results_for_block = fetch.results.clone();
             let host_send = rquickjs::Function::new(
                 ctx.clone(),
                 move |id: f64, method: String, url: String, headers_json: String, body: String| {
+                    if policy_block {
+                        let d = policy::decide(&url);
+                        if d.blocked {
+                            emit_event(
+                                "policy_blocked",
+                                json!({
+                                    "url": url,
+                                    "category": d.category.map(|c| c.as_str()),
+                                    "matched": d.matched_pattern,
+                                    "method": method,
+                                }),
+                            );
+                            if let Ok(mut g) = results_for_block.lock() {
+                                g.push(FetchResponse {
+                                    id: id as u64,
+                                    status: 204,
+                                    headers: HashMap::new(),
+                                    body: String::new(),
+                                    error: None,
+                                });
+                            }
+                            return;
+                        }
+                    }
                     let mut hmap: HashMap<String, String> = HashMap::new();
                     if let Ok(serde_json::Value::Object(map)) =
                         serde_json::from_str::<serde_json::Value>(&headers_json)
@@ -1564,6 +1596,9 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if args.get(1).map(|s| s.as_str()) == Some("policy-check") {
+        return policy_check_cmd(&args[2..]);
+    }
     let profile_name = parse_profile_arg(&args);
     let profile = Profile::load(&profile_name)?;
     if args.iter().any(|a| a == "--mcp") {
@@ -1571,6 +1606,43 @@ async fn main() -> Result<()> {
     } else {
         rpc_main(profile).await
     }
+}
+
+// `unbrowser policy-check <url> [<url>...]`
+//
+// Prints the policy decision for one or more URLs. Used to verify the
+// blocklist against ad-hoc URLs and to drive scripts/policy_baseline.py
+// without round-tripping through navigate. Pure stdlib + policy module —
+// no JS engine, no HTTP.
+fn policy_check_cmd(urls: &[String]) -> Result<()> {
+    if urls.is_empty() {
+        eprintln!("usage: unbrowser policy-check <url> [<url>...]");
+        eprintln!("       unbrowser policy-check --info");
+        std::process::exit(2);
+    }
+    if urls.iter().any(|u| u == "--info") {
+        println!("entries: {}", policy::entry_count());
+        return Ok(());
+    }
+    for url in urls {
+        let d = policy::decide(url);
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "<unparsed>".to_string());
+        if d.blocked {
+            println!(
+                "block\t{}\t{}\t{}\t{}",
+                d.category.map(|c| c.as_str()).unwrap_or("?"),
+                d.matched_pattern.unwrap_or("?"),
+                host,
+                url
+            );
+        } else {
+            println!("allow\t-\t-\t{}\t{}", host, url);
+        }
+    }
+    Ok(())
 }
 
 // `--profile <name>` or `--profile=<name>`. Falls back to UNBROWSER_PROFILE
@@ -1588,6 +1660,19 @@ fn parse_profile_arg(args: &[String]) -> String {
     std::env::var("UNBROWSER_PROFILE").unwrap_or_else(|_| profile::DEFAULT_PROFILE.to_string())
 }
 
+// `--policy=blocklist` enables Tier 1 deterministic blocking at the
+// `__host_fetch_send` layer. Off by default — opt-in for v0 until the
+// corpus measurement validates no extraction-quality regression. Env var
+// UNBROWSER_POLICY=blocklist also flips it on for ad-hoc shell use.
+fn parse_policy_arg(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--policy=blocklist" || a == "--policy=on") {
+        return true;
+    }
+    std::env::var("UNBROWSER_POLICY")
+        .map(|v| v == "blocklist" || v == "on")
+        .unwrap_or(false)
+}
+
 // Per-RPC wall-clock budget for JS eval. Default 30s — fits the watchdog
 // design rationale (script phase tightens to 5s, settle gets the remainder).
 // Sites with legitimately slow SSR/hydration can set UNBROWSER_TIMEOUT_MS
@@ -1602,8 +1687,10 @@ fn read_dispatch_budget_ms() -> u64 {
 }
 
 async fn rpc_main(profile: Profile) -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let policy_block = parse_policy_arg(&args);
     let profile_name = profile.name.clone();
-    let mut session = Session::new(&profile)?;
+    let mut session = Session::new(&profile, policy_block)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();
@@ -2088,7 +2175,9 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
 }
 
 async fn mcp_main(profile: Profile) -> Result<()> {
-    let mut session = Session::new(&profile)?;
+    let args: Vec<String> = std::env::args().collect();
+    let policy_block = parse_policy_arg(&args);
+    let mut session = Session::new(&profile, policy_block)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();
