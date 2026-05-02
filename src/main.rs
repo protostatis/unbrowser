@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+mod policy;
 mod profile;
 use profile::Profile;
 
@@ -302,10 +303,14 @@ struct Session {
     eval_deadline_ms: Arc<AtomicU64>,
     last_url: Option<String>,
     last_body: Option<String>,
+    // True when --policy=blocklist (or UNBROWSER_POLICY=blocklist) is set.
+    // Read by the external-script fetch loop in navigate_with and by the
+    // __host_fetch_send hook — see src/policy.rs.
+    policy_block: bool,
 }
 
 impl Session {
-    fn new(profile: &Profile) -> Result<Self> {
+    fn new(profile: &Profile, policy_block: bool) -> Result<Self> {
         let js_rt = rquickjs::Runtime::new().context("rquickjs Runtime::new")?;
         let js_ctx = rquickjs::Context::full(&js_rt).context("rquickjs Context::full")?;
 
@@ -369,10 +374,41 @@ impl Session {
             // __host_fetch_send(id, method, url, headers_json, body) — fire-and-forget.
             // headers_json is a JSON-encoded string from JS to avoid converting
             // an rquickjs Object inside the host closure.
+            //
+            // Policy hook: when policy_block is on, decide(url) gates the send.
+            // Blocked URLs short-circuit with a synthetic 204 pushed straight
+            // into the results queue — JS sees the same Promise resolution
+            // shape it would for a network-completed request, just with empty
+            // body and no actual HTTP made. See src/policy.rs.
             let sender = fetch.sender.clone();
+            let results_for_block = fetch.results.clone();
             let host_send = rquickjs::Function::new(
                 ctx.clone(),
                 move |id: f64, method: String, url: String, headers_json: String, body: String| {
+                    if policy_block {
+                        let d = policy::decide(&url);
+                        if d.blocked {
+                            emit_event(
+                                "policy_blocked",
+                                json!({
+                                    "url": url,
+                                    "category": d.category.map(|c| c.as_str()),
+                                    "matched": d.matched_pattern,
+                                    "method": method,
+                                }),
+                            );
+                            if let Ok(mut g) = results_for_block.lock() {
+                                g.push(FetchResponse {
+                                    id: id as u64,
+                                    status: 204,
+                                    headers: HashMap::new(),
+                                    body: String::new(),
+                                    error: None,
+                                });
+                            }
+                            return;
+                        }
+                    }
                     let mut hmap: HashMap<String, String> = HashMap::new();
                     if let Ok(serde_json::Value::Object(map)) =
                         serde_json::from_str::<serde_json::Value>(&headers_json)
@@ -426,6 +462,7 @@ impl Session {
             eval_deadline_ms,
             last_url: None,
             last_body: None,
+            policy_block,
         })
     }
 
@@ -550,6 +587,8 @@ impl Session {
             let items = collect_scripts(&tree, &final_url);
             let mut inline_count = 0usize;
             let mut external_count = 0usize;
+            let mut async_count = 0usize;
+            let mut policy_blocked_count = 0usize;
             let mut fetch_errors: Vec<String> = Vec::new();
 
             // Spawn external fetches in parallel — current_thread runtime
@@ -558,11 +597,34 @@ impl Session {
             // sum(round-trip times). Each task has a per-fetch timeout so
             // a single huge bundle can't hang the navigate indefinitely.
             // Document ordering preserved by indexing results.
+            //
+            // Policy hook: when self.policy_block is on, decide(url) gates
+            // each external fetch BEFORE we spawn the task. Static <script
+            // src> tracker URLs (Adobe DTM, Ketch, GoogleTagServices, etc.)
+            // are caught here — they bypass __host_fetch_send because page
+            // scripts haven't run yet to issue them, so this is the
+            // structurally correct place for the gate. See src/policy.rs.
             const SCRIPT_FETCH_TIMEOUT_MS: u64 = 8000;
             let mut fetch_tasks: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
                 Vec::new();
             for (idx, item) in items.iter().enumerate() {
-                if let ScriptItem::External(u) = item {
+                if let ScriptItem::External { url: u, .. } = item {
+                    if self.policy_block {
+                        let d = policy::decide(u);
+                        if d.blocked {
+                            emit_event(
+                                "policy_blocked",
+                                json!({
+                                    "url": u,
+                                    "kind": "static_script",
+                                    "category": d.category.map(|c| c.as_str()),
+                                    "matched": d.matched_pattern,
+                                }),
+                            );
+                            policy_blocked_count += 1;
+                            continue;
+                        }
+                    }
                     let url = u.clone();
                     let http = self.http.clone();
                     fetch_tasks.push((
@@ -609,23 +671,42 @@ impl Session {
                 }
             }
 
-            // Now assemble sources in document order: inline goes through
-            // unchanged, externals come from the parallel-fetch results map
-            // (skipped if their fetch failed).
-            let mut sources: Vec<String> = Vec::new();
+            // Two-pass assembly to honor `async` script semantics:
+            //   sync_sources  — Inline + External(Sync) in document order
+            //   async_sources — External(Async) in document order, executed
+            //                   AFTER the sync queue. The HTML spec lets async
+            //                   scripts execute as soon as their fetch
+            //                   completes (no order guarantee w.r.t. other
+            //                   scripts); we approximate by executing them
+            //                   last in document order, which is spec-legal
+            //                   (well-behaved async scripts can't depend on
+            //                   ordering anyway) and trivially deterministic
+            //                   for replay/measurement. Defer is folded into
+            //                   Sync — we have no incremental parsing, so
+            //                   "execute after parse in document order"
+            //                   collapses to "execute now in document order."
+            let mut sync_sources: Vec<String> = Vec::new();
+            let mut async_sources: Vec<String> = Vec::new();
             for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     ScriptItem::Inline(s) => {
                         inline_count += 1;
-                        sources.push(s);
+                        sync_sources.push(s);
                     }
-                    ScriptItem::External(_) => {
+                    ScriptItem::External { kind, .. } => {
                         if let Some(body) = external_results.remove(&idx) {
-                            sources.push(body);
+                            match kind {
+                                ScriptKind::Sync => sync_sources.push(body),
+                                ScriptKind::Async => {
+                                    async_count += 1;
+                                    async_sources.push(body);
+                                }
+                            }
                         }
                     }
                 }
             }
+            let sources: Vec<String> = sync_sources.into_iter().chain(async_sources).collect();
             // Eval all in document order. Page scripts often end with an
             // Element-returning expression (circular refs → JSON.stringify
             // throws), so use eval_void.
@@ -674,6 +755,8 @@ impl Session {
             Some(json!({
                 "inline_count": inline_count,
                 "external_count": external_count,
+                "async_count": async_count,
+                "policy_blocked": policy_blocked_count,
                 "executed": executed,
                 "interrupted": interrupted,
                 "errors_count": eval_errors.len(),
@@ -692,6 +775,28 @@ impl Session {
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
 
+        // Auto-extract on SPA-shell pages. When the blockmap density says the
+        // DOM looks like an unhydrated shell (likely_js_filled=true) AND there
+        // are JSON-bearing <script> tags to pull from (json_scripts>0), run
+        // __extract() inline so the agent gets embedded data (__NEXT_DATA__,
+        // JSON-LD, json_in_script, etc.) in one round trip instead of two.
+        // Healthy pages skip the call and pay zero extra cost. The agent can
+        // still call extract() explicitly to override or pick a strategy.
+        let density = blockmap.get("density");
+        let likely_js_filled = density
+            .and_then(|d| d.get("likely_js_filled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let json_scripts = density
+            .and_then(|d| d.get("json_scripts"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let auto_extract = if likely_js_filled && json_scripts > 0 {
+            self.extract(None).ok()
+        } else {
+            None
+        };
+
         emit_event(
             "navigate",
             json!({
@@ -702,6 +807,8 @@ impl Session {
                 "exec_scripts": exec_scripts,
                 "scripts_executed": scripts.as_ref().and_then(|s| s.get("executed")),
                 "scripts_interrupted": scripts.as_ref().and_then(|s| s.get("interrupted")),
+                "auto_extract_strategy": auto_extract.as_ref().and_then(|e| e.get("strategy")),
+                "auto_extract_confidence": auto_extract.as_ref().and_then(|e| e.get("confidence")),
             }),
         );
 
@@ -713,6 +820,7 @@ impl Session {
             "blockmap": blockmap,
             "challenge": challenge,
             "scripts": scripts,
+            "extract": auto_extract,
         }))
     }
 
@@ -1403,11 +1511,27 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
     })
 }
 
-// One <script> element from a parsed page — either an inline body or an
-// external src= URL (resolved against the page URL).
+// One <script> element from a parsed page.
+//
+// `kind` distinguishes async from non-async. Inline and Defer are treated as
+// Sync for execution because we don't have incremental HTML parsing — by the
+// time scripts run, the document is fully parsed, so "execute after parse in
+// document order" (Defer's spec semantics) and "execute now in document order"
+// (Sync) collapse to the same thing for us. Only `async` differs: async
+// scripts may execute out of document order (we run them after the sync
+// queue, in fetch-completion order).
+//
+// Inline scripts cannot be async (browsers ignore the attribute on inline),
+// so we don't track kind for Inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptKind {
+    Sync,
+    Async,
+}
+
 enum ScriptItem {
     Inline(String),
-    External(String),
+    External { url: String, kind: ScriptKind },
 }
 
 // Walk the parsed HTML tree and collect <script> elements in document order.
@@ -1445,7 +1569,19 @@ fn walk_for_scripts(node: &Value, base: Option<&url::Url>, out: &mut Vec<ScriptI
                     && let Some(b) = base
                     && let Ok(resolved) = b.join(src_url)
                 {
-                    out.push(ScriptItem::External(resolved.to_string()));
+                    // HTML treats `async` and `defer` as boolean attrs — any
+                    // presence (even empty value) counts. `async` wins if both
+                    // are set, matching browsers.
+                    let is_async = attrs.and_then(|a| a.get("async")).is_some();
+                    let kind = if is_async {
+                        ScriptKind::Async
+                    } else {
+                        ScriptKind::Sync
+                    };
+                    out.push(ScriptItem::External {
+                        url: resolved.to_string(),
+                        kind,
+                    });
                 }
             } else if let Some(children) = obj.get("children").and_then(|c| c.as_array()) {
                 let mut content = String::new();
@@ -1564,6 +1700,9 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if args.get(1).map(|s| s.as_str()) == Some("policy-check") {
+        return policy_check_cmd(&args[2..]);
+    }
     let profile_name = parse_profile_arg(&args);
     let profile = Profile::load(&profile_name)?;
     if args.iter().any(|a| a == "--mcp") {
@@ -1571,6 +1710,43 @@ async fn main() -> Result<()> {
     } else {
         rpc_main(profile).await
     }
+}
+
+// `unbrowser policy-check <url> [<url>...]`
+//
+// Prints the policy decision for one or more URLs. Used to verify the
+// blocklist against ad-hoc URLs and to drive scripts/policy_baseline.py
+// without round-tripping through navigate. Pure stdlib + policy module —
+// no JS engine, no HTTP.
+fn policy_check_cmd(urls: &[String]) -> Result<()> {
+    if urls.is_empty() {
+        eprintln!("usage: unbrowser policy-check <url> [<url>...]");
+        eprintln!("       unbrowser policy-check --info");
+        std::process::exit(2);
+    }
+    if urls.iter().any(|u| u == "--info") {
+        println!("entries: {}", policy::entry_count());
+        return Ok(());
+    }
+    for url in urls {
+        let d = policy::decide(url);
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "<unparsed>".to_string());
+        if d.blocked {
+            println!(
+                "block\t{}\t{}\t{}\t{}",
+                d.category.map(|c| c.as_str()).unwrap_or("?"),
+                d.matched_pattern.unwrap_or("?"),
+                host,
+                url
+            );
+        } else {
+            println!("allow\t-\t-\t{}\t{}", host, url);
+        }
+    }
+    Ok(())
 }
 
 // `--profile <name>` or `--profile=<name>`. Falls back to UNBROWSER_PROFILE
@@ -1588,6 +1764,22 @@ fn parse_profile_arg(args: &[String]) -> String {
     std::env::var("UNBROWSER_PROFILE").unwrap_or_else(|_| profile::DEFAULT_PROFILE.to_string())
 }
 
+// `--policy=blocklist` enables Tier 1 deterministic blocking at the
+// `__host_fetch_send` layer. Off by default — opt-in for v0 until the
+// corpus measurement validates no extraction-quality regression. Env var
+// UNBROWSER_POLICY=blocklist also flips it on for ad-hoc shell use.
+fn parse_policy_arg(args: &[String]) -> bool {
+    if args
+        .iter()
+        .any(|a| a == "--policy=blocklist" || a == "--policy=on")
+    {
+        return true;
+    }
+    std::env::var("UNBROWSER_POLICY")
+        .map(|v| v == "blocklist" || v == "on")
+        .unwrap_or(false)
+}
+
 // Per-RPC wall-clock budget for JS eval. Default 30s — fits the watchdog
 // design rationale (script phase tightens to 5s, settle gets the remainder).
 // Sites with legitimately slow SSR/hydration can set UNBROWSER_TIMEOUT_MS
@@ -1602,8 +1794,10 @@ fn read_dispatch_budget_ms() -> u64 {
 }
 
 async fn rpc_main(profile: Profile) -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let policy_block = parse_policy_arg(&args);
     let profile_name = profile.name.clone();
-    let mut session = Session::new(&profile)?;
+    let mut session = Session::new(&profile, policy_block)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();
@@ -1833,12 +2027,12 @@ fn mcp_tools() -> Value {
     json!([
         {
             "name": "navigate",
-            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, also extracts inline <script> tags from the parsed HTML, eval's them in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. Returns a `scripts` summary with executed/errors when exec_scripts is true.",
+            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, extracts inline AND external <script> tags from the parsed HTML, fetches externals in parallel (8s per-fetch timeout), eval's them in document order in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. `<script async>` is honored: async scripts execute after the sync queue. When `--policy=blocklist` is set, tracker URLs are blocked at script-fetch time (see scripts.policy_blocked in the result). Returns a `scripts` summary with inline_count, external_count, async_count, policy_blocked, executed, errors.\n\nSPA-shell auto-extract: the BlockMap's `density.likely_js_filled` flags pages that look like an unhydrated shell (empty tables/lists, thin top-level structure, framework chrome but no rendered content). When that's true AND `density.json_scripts > 0` (page embeds data in <script type=application/json | application/ld+json | text/x-magento-init | ...>), navigate auto-runs `extract()` and returns the result as the `extract` field — collapsing the see-shell-then-extract two-step into one round trip on Next.js / Magento / Shopify / JSON-LD pages where the data the JS would have rendered is already sitting in the HTML. On healthy pages `extract` is null and there is no extra cost.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "url":          { "type": "string", "description": "Absolute URL to fetch" },
-                    "exec_scripts": { "type": "boolean", "description": "Execute inline <script> tags after parse (default false). External src=URL scripts are NOT loaded yet." }
+                    "exec_scripts": { "type": "boolean", "description": "Run page <script> tags (inline + external src) after parse, settle the event loop, and fire DOMContentLoaded + load. Default false." }
                 },
                 "required": ["url"]
             }
@@ -2088,7 +2282,9 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
 }
 
 async fn mcp_main(profile: Profile) -> Result<()> {
-    let mut session = Session::new(&profile)?;
+    let args: Vec<String> = std::env::args().collect();
+    let policy_block = parse_policy_arg(&args);
+    let mut session = Session::new(&profile, policy_block)?;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let stdout = std::io::stdout();
