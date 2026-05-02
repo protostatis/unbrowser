@@ -1,6 +1,6 @@
 # Probabilistic Execution Policy for unbrowser
 
-**Status:** Design proposal
+**Status:** Implementation spec draft
 **Author:** unbrowser core
 **Last updated:** 2026-05-02
 
@@ -12,7 +12,7 @@ We propose a different path: close most of the practical gap with a **probabilis
 
 The headline claim: a real Bayesian policy layer is *available to us specifically* because we don't operate under the constraint that defines production JIT design — single-digit-nanosecond decisions on the hot path. We have microsecond-to-millisecond budgets at the policy layer and can afford inference that V8 cannot.
 
-Target outcome: 70–90% of the QuickJS-vs-V8 wall-clock gap closed on a real-world corpus, with no regression in extraction quality and no new stealth detections.
+Target outcome: at least 50% median wall-clock improvement versus current `main` on a pinned benchmark corpus, with no more than 1% extraction-quality regression and no new stealth detections. The aspirational ceiling is 70-90% of the practical QuickJS-vs-V8 wall-clock gap on pages where most work is avoidable framework, telemetry, animation, or observer churn.
 
 ---
 
@@ -142,7 +142,7 @@ The hot path does not change semantically. It collects sufficient statistics (co
 | Bytecode cache hit/miss | Per script | μs | URL + ETag + content hash |
 | Speculative preload | Per navigation | ms | Per-domain link-graph priors |
 
-Each decision is independent, each has a closed-form Bayesian update, none of them require the policy layer to be on the hot path of script execution.
+These decisions are intentionally cheap, but they are not statistically independent. Skipping a script changes API-call counts and settle timing; observer stubs change DOM mutation patterns; cached bytecode changes latency without changing page semantics. The implementation therefore records every active policy decision in a per-navigation `policy_trace` and only applies posterior updates that have an attributable outcome. The first version uses independent conjugate posteriors as storage, not as a claim that the page-load system is independent.
 
 ---
 
@@ -150,10 +150,10 @@ Each decision is independent, each has a closed-form Bayesian update, none of th
 
 ### 4.1 Notation
 
-For each (domain, resource_type) we maintain conjugate posteriors over the binary outcomes that drive policy decisions. We use Beta-Binomial because:
+For each policy key we maintain conjugate posteriors over the binary outcomes that drive policy decisions. We use Beta-Binomial because:
 
-- Binary outcomes (script needed / not, settled / not)
-- Cheap closed-form posterior update (`α += 1` on success, `β += 1` on failure)
+- Binary outcomes for script and API decisions (needed / not needed)
+- Cheap closed-form posterior update (`α += weight` or `β += weight`)
 - Natural credible intervals
 - Tiny state per posterior (two `f64`s)
 
@@ -163,18 +163,20 @@ Where outcomes are categorical (e.g., type at a polymorphic site), we extend to 
 
 For each `(domain, script_url_pattern)`:
 
-- Prior: `Beta(α₀, β₀)` — informative for known framework patterns (React, Next, jQuery), uninformative for unknown
-- Evidence: at end of agent task, did the page extract correctly? Was the script's side effects visible in the result?
-- Posterior: standard Beta-Binomial update
-- Decision: skip script if `P(needed) < θ_skip` (e.g., 0.1) with high confidence (lower CI bound below threshold)
+- Random variable: `script_needed = true` means skipping this script can change the driver's task outcome or extracted data.
+- Prior: `Beta(α0, β0)` over `P(script_needed)`; informative for known framework, ad, analytics, challenge, and telemetry patterns; uninformative for unknown.
+- Evidence: paired or replayed navigations where this script's action changed while the task, URL, cookies, viewport, and policy seed stayed fixed.
+- Posterior: standard Beta-Binomial update on attributable outcomes.
+- Decision: skip script only if the **upper** credible bound of `P(script_needed)` is below `θ_skip` (for example, `q95 < 0.1`). Using the lower bound is unsafe: `Beta(1, 1)` has a low 5% quantile and would incorrectly skip unknown scripts.
 
 The hard part is the credit-assignment problem — *was* the script's effect needed? We bootstrap with structural priors:
 
 - Hostname matches known ad/analytics blocklist → strong prior toward not-needed
 - Script content matches known framework signature (React DOMServer, Vue) → strong prior toward needed
 - Inline script with DOM-touching patterns → moderate prior toward needed
+- Known bot, challenge, or fingerprinting host → strong prior toward needed unless an explicit stealth profile says otherwise
 
-Updates happen post-hoc when we observe extraction success/failure.
+Updates happen only through the outcome protocol in Section 4.5. A normal successful run with a skipped script is weak evidence that the script was not needed. A failed run is not enough to update a specific script by itself; the implementation must run a targeted replay or bisect before assigning `script_needed = true`.
 
 ### 4.3 Site-settled posterior
 
@@ -192,12 +194,42 @@ Concrete: instead of a fixed 3-second timeout, we wait `min(0.9-quantile of lear
 
 For each `(domain, API)` where API ∈ `{rAF, IntersectionObserver, MutationObserver, ResizeObserver, ...}`:
 
-- Beta-Binomial over "extraction succeeded with this API stubbed"
-- Prior: heavily biased toward "stub is fine" (because it usually is for non-rendering use)
-- Update: when extraction fails, did re-running with this API enabled fix it? +1 to needed.
-- Decision: stub by default; activate full implementation if posterior crosses threshold.
+- Random variable: `full_api_needed = true` means the stubbed implementation can change the driver's task outcome or extracted data.
+- Prior: biased toward `false` for non-rendering extraction (`Beta(1, 9)` is the starting point), with domain/framework overrides.
+- Update: if a stubbed run fails and a controlled replay with only this API promoted to full semantics succeeds, update `full_api_needed = true`; if repeated stubbed runs succeed on the task class, update `false`.
+- Decision: install the stub if `P(full_api_needed)` has an upper credible bound below the configured stub-safe threshold (`q95 < θ_stub_safe`, default `0.3`); promote to full implementation when the lower credible bound crosses the configured needed threshold (`q05 > θ_full_needed`, default `0.5`) or when the driver forces promotion.
 
-### 4.5 Bytecode cache value
+The stored key must include `(domain, api_name, task_class, framework_signature)` rather than only `(domain, api_name)`. A search-results query and a visual interaction task on the same domain can need different API behavior.
+
+### 4.5 Outcome protocol and credit assignment
+
+The policy layer cannot infer correctness from page load events alone. The driver must report task outcomes explicitly:
+
+```json
+{
+  "method": "report_outcome",
+  "params": {
+    "navigation_id": "uuid",
+    "task_id": "uuid",
+    "task_class": "extract|query|click|form|visual",
+    "success": true,
+    "quality": 1.0,
+    "required_selectors": ["optional css or element refs"],
+    "error": null
+  }
+}
+```
+
+`navigation_id` binds the outcome to the `policy_trace` emitted during navigation. The trace records scripts skipped/run, API stubs installed/promoted, cache hits, settle deadline, relevant hashes, and a deterministic policy seed. Posterior updates are allowed only from these evidence classes:
+
+1. **Positive weak evidence:** a task succeeds with a policy decision active. This can increment the "not needed" side with a small weight, for example `0.1`, because success may be unrelated to the decision.
+2. **Controlled replay evidence:** the task changes from fail to success, or extracted data changes materially, when exactly one decision is toggled. This is strong evidence and receives weight `1.0`.
+3. **Bisect evidence:** when several decisions were active, replay uses binary search over skipped scripts or promoted APIs. Only the isolated culprit receives strong evidence.
+4. **No update:** a task fails under many active decisions and no replay is run. Recording the failure is useful for debugging, but it must not corrupt individual posteriors.
+
+This makes the implementation slower when learning from failures, but failure replay is off the hot path and can be sampled. The default sampling policy is: replay all failures in local benchmark mode, replay at most 1% of successful production navigations, and never replay when the driver marks the task as side-effectful.
+
+### 4.6 Bytecode cache value
 
 For each compiled script artifact:
 
@@ -206,7 +238,7 @@ For each compiled script artifact:
 - Evict by lowest expected future value
 - This subsumes LRU as a special case (when we have no domain priors)
 
-### 4.6 Why conjugate priors
+### 4.7 Why conjugate priors
 
 We deliberately stay in the conjugate-prior corner. No MCMC, no variational inference, no neural nets. Reasons:
 
@@ -233,10 +265,10 @@ action* = argmax_a  E[utility(a) | posterior]
 For binary decisions (skip / run) this collapses to a threshold on the posterior:
 
 ```
-skip if  E[cost_of_running] · P(running)  >  E[cost_of_skipping] · P(needed)
+skip if  saved_runtime_ms * P(not_needed) > regression_cost_ms * P(needed)
 ```
 
-We tune thresholds offline using the test corpus.
+For v1, the implementation should not expose arbitrary utility functions in the hot path. Each policy uses fixed thresholds tuned offline on the deterministic replay corpus, with a conservative default that preserves baseline behavior on unknown domains.
 
 ### 5.2 The settle decision (worked example)
 
@@ -264,13 +296,13 @@ This converges to "stop early on simple sites, wait longer on heavy SPAs," learn
 ```python
 def should_skip_script(domain, script_url, content_features, prior_store):
     posterior = prior_store.get_or_default(domain, content_features)
-    # Lower bound of credible interval
-    lower_ci = posterior.quantile(0.05)
+    # Upper bound of credible interval for P(script_needed)
+    upper_ci = posterior.quantile(0.95)
     # Skip only if we're confident it's not needed
-    return lower_ci < SKIP_THRESHOLD  # e.g., 0.1
+    return upper_ci < SKIP_THRESHOLD  # e.g., 0.1
 ```
 
-The use of the lower CI bound (rather than mean) is a conservative choice: skip only when we're confident, run by default when uncertain. This minimizes correctness regression.
+The use of the upper CI bound (rather than mean or lower bound) is the conservative choice: unknown scripts run by default until the posterior has enough evidence that the script is not needed. This minimizes correctness regression.
 
 ---
 
@@ -278,39 +310,47 @@ The use of the lower CI bound (rather than mean) is a conservative choice: skip 
 
 ### Phase A — Profile collection infrastructure (1–2 weeks)
 
-**Goal:** Make the system observable enough to learn from.
+**Goal:** Make the system observable enough to learn from without changing runtime behavior.
 
 - Extend NDJSON event stream on stderr to emit:
-  - `script_loaded {url, host, size, hash}`
-  - `script_executed {hash, duration_us, settled}`
-  - `api_called {api_name, count}` (for rAF, observers)
-  - `settle_observed {ms_since_navigate, dom_mutations_since_last}`
-  - `extraction_success {task_id, success: bool}` (driver-supplied)
-- Write a `tail -f`-friendly JSONL file in `~/.unbrowser/profiles/{domain}.jsonl`
-- Schema-versioned
+  - `navigation_started {navigation_id, url, domain, task_id?, task_class?, policy_seed}`
+  - `script_loaded {navigation_id, script_id, url, host, size, content_hash, features}`
+  - `script_decision {navigation_id, script_id, action: "run|skip", reason, posterior?, structural_prior}`
+  - `script_executed {navigation_id, script_id, duration_us, error?}`
+  - `api_policy {navigation_id, api_name, action: "stub|full|promoted", reason, posterior?}`
+  - `api_called {navigation_id, api_name, count}` (for rAF, observers)
+  - `settle_observed {navigation_id, ms_since_navigate, dom_mutations_since_last}`
+  - `policy_trace {navigation_id, decisions, cache_hits, settle_deadline_ms}`
+- Add `report_outcome {navigation_id, task_id, task_class, success, quality?, required_selectors?, error?}` to the driver-facing API.
+- Add an optional `--profile-log path` flag for a `tail -f`-friendly JSONL file. Default behavior emits NDJSON only for the current process and does not persist user browsing profiles.
+- Every event is schema-versioned with `schema_version`.
 
-**Deliverable:** Run unbrowser against the test corpus, get readable profile data.
+**Deliverable:** Run unbrowser against the test corpus, get readable profile data, and bind each driver outcome to exactly one navigation trace.
 
 ### Phase B — Posterior store (1 week)
 
-**Goal:** Persist and query priors per (domain, resource_type).
+**Goal:** Persist and query priors per policy key.
 
-- SQLite store at `~/.unbrowser/priors.db`
-- Schema: `posteriors(domain, key, alpha, beta, n_observations, last_updated)`
-- Online update API: `prior_store.update(domain, key, outcome: bool)`
+- Store location: process-local in-memory by default; persistent SQLite only when `--prior-store path` is supplied. A convenience default such as `~/.unbrowser/priors.db` is acceptable for the CLI, but shared-service callers must opt in explicitly.
+- Schema: `posteriors(scope, key, alpha, beta, n_observations, last_updated, schema_version)`
+- Online update API: `prior_store.update(scope, key, outcome: bool, weight: f64, evidence_source)`
 - Query API: `prior_store.posterior(domain, key) -> Beta(α, β)`
+- Keys include the policy dimension: script keys include `(domain, script_url_pattern, content_hash_prefix, task_class, framework_signature)`; API keys include `(domain, api_name, task_class, framework_signature)`.
 - TTL on posteriors: priors decay if `last_updated > 30 days` (concept drift defense)
+- Cap effective sample size (`alpha + beta <= 1000`) so old evidence can be overcome.
+- Use WAL mode and batched writes; the hot path records observations to an in-memory queue and the policy updater owns SQLite writes.
 
-**Deliverable:** Round-trip `update → query` works; posterior survives process restart.
+**Deliverable:** Round-trip `update → query` works in memory; when `--prior-store` is set, the posterior also survives process restart.
 
 ### Phase C — Bytecode cache (1 week)
 
 **Goal:** Stop re-parsing the same scripts.
 
 - Hook into the script loader: before compiling, check cache
-- Cache key: `sha256(script_content)` (not URL — same script, different URLs is common)
+- Cache key includes `sha256(script_content)`, QuickJS/rquickjs version, target triple, bytecode format version, module-vs-script mode, compile flags, and `sha256(shims.js)` when shims can affect compilation context. URL is metadata, not identity.
 - Backing store: `~/.unbrowser/bytecode/{prefix}/{hash}.qbc`
 - Use QuickJS `JS_WriteObject` / `JS_ReadObject`
+- Only load bytecode produced locally by this binary/configuration. Never accept remote or starter-pack bytecode; shipped priors are data, not executable artifacts.
 - LRU eviction with size cap (default 500 MB)
 - Future: replace LRU with expected-future-value eviction (Phase G)
 
@@ -326,7 +366,9 @@ The use of the lower CI bound (rather than mean) is a conservative choice: skip 
   - Default → uninformative prior, run by default
 - Hook between HTML parse and script execution
 - Emit `script_skipped` events for visibility
-- Skip decision uses lower CI bound (conservative)
+- Skip decision uses the upper credible bound for `P(script_needed)` (conservative)
+- Unknown scripts run by default unless a structural prior is strong enough to make the upper bound safe.
+- All skip decisions are reversible by per-navigation override (`run_all_scripts`) and by targeted failure replay.
 
 **Deliverable:** Measurable script-execution-count reduction on commercial pages with no extraction quality regression.
 
@@ -341,6 +383,7 @@ The use of the lower CI bound (rather than mean) is a conservative choice: skip 
   - `ResizeObserver` → fires once with viewport dims
 - Per-domain override: if posterior says "needed," install full implementation
 - Driver hook: agent can force-activate for sites where it matters
+- Use the outcome protocol before updating API posteriors; a failed task does not by itself prove a stub was responsible.
 
 **Deliverable:** Pages that lazy-load on scroll suddenly settle in one tick on stub-OK domains; no regressions on stub-NOT-OK domains.
 
@@ -352,6 +395,7 @@ The use of the lower CI bound (rather than mean) is a conservative choice: skip 
 - Posterior predictive over settle time
 - New navigate option: `wait_settle: true` uses 0.9-quantile + small buffer
 - Hard ceiling override (default 5s, configurable)
+- Outcome updates can shift the deadline later when successful extraction requires elements that appeared after the learned deadline.
 
 **Deliverable:** p50 settle time drops on simple sites without regressing complex ones.
 
@@ -359,7 +403,7 @@ The use of the lower CI bound (rather than mean) is a conservative choice: skip 
 
 **Goal:** Make all the above work survive process restart and benefit from accumulated learning.
 
-- Already partly in B (posterior store). This phase:
+- Already partly in B for opt-in persistent stores. This phase:
   - Replaces LRU bytecode eviction with expected-future-value
   - Adds prior-bundling: ship a "starter pack" of priors for top-1000 domains
   - Adds `unbrowser export-priors` / `import-priors` CLI for sharing/auditing
@@ -382,7 +426,12 @@ Skip unless Phase A–G results justify the additional complexity.
 
 ### 7.1 Corpus
 
-Ten targets covering the major site shapes from `CLAUDE.md`'s "Quick reference by site type":
+Use two corpora:
+
+1. **Deterministic replay corpus**: pinned HTML, scripts, headers, cookies, viewport, timezone, and network responses captured with permission or generated from fixtures. This is the acceptance corpus for posterior updates, extraction quality, bytecode cache correctness, and performance deltas.
+2. **Live canary corpus**: popular real sites used only for smoke testing bot/challenge behavior, current framework shapes, and drift. Live canary results are reported separately and cannot be the sole evidence for shipping a policy change.
+
+Replay targets should cover the major site shapes from `CLAUDE.md`'s "Quick reference by site type":
 
 | Site | Type | Why |
 |---|---|---|
@@ -397,7 +446,7 @@ Ten targets covering the major site shapes from `CLAUDE.md`'s "Quick reference b
 | `kalshi.com` | Card grid SPA | Different impl, same shape |
 | `zillow.com/homes/for_rent/` | Bot-protected SSR | Tests interaction with cookies/challenges |
 
-Excluded from policy-affected runs: any site requiring login state (Phase 4 cookies still control that path).
+Excluded from policy-affected acceptance runs: any site requiring login state, geolocation-sensitive personalization, or non-deterministic account/cookie state. Those belong in the live canary suite.
 
 ### 7.2 Metrics
 
@@ -419,19 +468,21 @@ Excluded from policy-affected runs: any site requiring login state (Phase 4 cook
 Three configurations, paired across all targets:
 
 - **C0 (baseline)**: current `main`, no policy
-- **C1 (cache only)**: bytecode cache + settle learner (Phases C, F)
-- **C2 (full)**: all phases A–G
+- **C1 (observability only)**: Phase A enabled, no behavior-changing decisions. This must be performance-neutral enough to leave enabled for debugging.
+- **C2 (cache + settle)**: bytecode cache + settle learner (Phases C, F)
+- **C3 (full)**: all phases A–G
 
 ### 7.4 Methodology
 
 For each `(target, configuration)`:
 
-1. 100 cold runs (cleared cache, fresh process) — measures startup
-2. 100 warm runs (cache populated, process reused) — measures steady state
-3. Record all metrics
-4. Compute paired differences C0→C1, C0→C2, C1→C2
-5. 95% bootstrap CIs (10k resamples) on each difference
-6. Report p-values for "no difference" null hypothesis (Wilcoxon signed-rank for non-parametric)
+1. Pin OS, CPU governor, viewport, timezone, user agent, and network replay fixture.
+2. Run 100 cold runs (cleared cache, fresh process) to measure startup.
+3. Run 100 warm runs (cache populated, process reused) to measure steady state.
+4. Record all metrics and the full `policy_trace`.
+5. Compute paired differences C0→C1, C0→C2, C0→C3, and C2→C3.
+6. 95% bootstrap CIs (10k resamples) on each difference.
+7. Report p-values for "no difference" null hypothesis (Wilcoxon signed-rank for non-parametric).
 
 A change is considered an improvement only if the lower CI bound is on the favorable side of zero.
 
@@ -439,10 +490,11 @@ A change is considered an improvement only if the lower CI bound is on the favor
 
 The implementation ships when:
 
-- C2 vs C0: median wall-clock improvement ≥ 50% across the corpus, lower CI bound > 30%
-- C2 vs C0: extraction success rate change is in `[-1%, +∞)` (i.e., no meaningful regression)
-- C2 vs C0: stealth signal count is in `(-∞, +0)` (no new detections)
-- C1 alone: at least 30% wall-clock improvement (sanity check that cache pulls weight)
+- C1 vs C0: median wall-clock regression < 5% (observability is cheap enough)
+- C3 vs C0: median wall-clock improvement ≥ 50% across the replay corpus, lower CI bound > 30%
+- C3 vs C0: extraction success rate change is in `[-1%, +∞)` (i.e., no meaningful regression)
+- C3 vs C0: stealth signal count is in `(-∞, +0)` (no new detections)
+- C2 alone: at least 30% wall-clock improvement (sanity check that cache and settle learner pull weight)
 - All probabilistic state is migratable across schema versions
 
 If any criterion fails, ship the components that pass and revisit the failing one.
@@ -463,10 +515,10 @@ Beyond corpus performance, three adversarial tests:
 
 Aggressive script-skipping or API-stubbing can break extraction in subtle ways. Mitigations:
 
-- Conservative thresholds (use lower CI bound, not mean)
+- Conservative thresholds (use the upper credible bound for "needed" probabilities, not the mean or lower bound)
 - Per-domain override mechanism for the agent driver to force "run everything" mode
 - Continuous monitoring of `extraction_success_rate` in profile stream
-- Rollback via posterior re-update: if extraction fails, posteriors update toward "run more"
+- Rollback via controlled replay or manual override. Failed tasks alone are not assigned to individual policy decisions.
 
 ### 8.2 Stealth signal loss (medium)
 
@@ -488,8 +540,9 @@ Adversarial site changes its bundle, our prior becomes wrong. Mitigations:
 
 Cross-session priors are persisted state. If unbrowser is run as a shared service, one user's profile shouldn't leak to another's. Mitigations:
 
-- Posterior store is per-process by default (no shared state across users)
-- Optional shared-prior mode requires explicit opt-in
+- Posterior store is in-memory per process by default (no shared state across users)
+- Persistent stores require an explicit path (`--prior-store`) and should be namespaced per tenant in shared services
+- Optional shared-prior mode requires explicit opt-in and must never include user-specific URLs, selectors, form values, or cookies
 - "Starter pack" priors are read-only and shipped as data; no user-specific state
 
 ### 8.5 Maintenance / migration (low)
@@ -507,6 +560,15 @@ The "argmax over expected utility" framing is clean in this doc but each `u(a, o
 - Start with simple thresholds (skip if `P(needed) < 0.1`), not full utility computation
 - Tune thresholds on the test corpus before the more elaborate machinery
 - Keep utility functions visible and configurable, not buried
+
+### 8.7 Bytecode cache safety (medium)
+
+QuickJS bytecode is an internal executable representation, not a stable or safe interchange format. Mitigations:
+
+- Cache only bytecode produced locally by the same binary/configuration
+- Include engine version, target triple, compile flags, module mode, and shim hash in the cache key
+- Treat the cache directory as trusted local state; use restrictive permissions and never import bytecode from starter packs or remote sources
+- Fall back to source compilation on any cache read, version, or validation failure
 
 ---
 
@@ -535,9 +597,9 @@ The work is successful if six months after merging:
 
 ## 11. Open questions
 
-These don't block the design but should be resolved before/during implementation:
+These don't block the architecture, but each must be resolved before enabling behavior-changing policy decisions by default:
 
-1. **Where does extraction success/failure signal come from?** The driver (Python client, MCP host) is the only entity that knows whether the agent's task succeeded. Need to define a clean RPC for this — possibly a new `report_outcome {task_id, success, signals}` method.
+1. **What is the minimal useful quality schema?** `report_outcome` defines the transport, but each driver still needs to decide whether it can provide only `success`, a numeric `quality`, expected selectors, or richer task-specific assertions.
 
 2. **How are framework signatures detected?** Useful for informative priors. Options: hash-prefix matching, AST-shape signatures, or just "first two lines of the bundle" heuristic. Probably the cheapest thing that works.
 
@@ -545,7 +607,7 @@ These don't block the design but should be resolved before/during implementation
 
 4. **Do we ship priors as part of the binary or as a separate data file?** Embedding bloats the binary; external file is one more thing to install. Probably external with a `--with-priors=path` flag.
 
-5. **How do we distinguish "this script is unneeded" from "this script's effects haven't been observed yet"?** Cold-start of a new domain is currently uninformative — we'd run everything. Is that fine, or do we want cross-domain transfer (e.g., "this looks like a Cloudflare challenge script, prior says skip even on first visit")?
+5. **How much replay is acceptable outside benchmarks?** Cold-start of a new domain is intentionally conservative and runs unknown scripts. Production replay should be sampled and disabled for side-effectful tasks, but the exact budget should be tuned against real usage.
 
 ---
 
@@ -581,15 +643,16 @@ Concrete trace through a `cnbc.com` page load under the proposed system:
 7. Settle detector (Phase F) consults posterior: cnbc's posterior says median settle 1.8s, p90 2.5s. Wait until 2.5s or DOM-quiet, whichever first.
 8. At 1.6s, DOM-quiet detected. Return blockmap.
 9. Agent issues `query("table.markets-table tbody tr")`. `density.likely_js_filled` had been true on baseline; with stubs, table is now populated.
-10. Driver reports `report_outcome {success: true}`.
+10. Driver reports `report_outcome {navigation_id, task_id, task_class: "query", success: true, quality: 1.0}`.
 11. Posteriors updated:
-    - `(cnbc.com, IntersectionObserver, stub-ok)` → `α += 1`
+    - `(cnbc.com, IntersectionObserver, query, framework_signature, full_api_needed)` → weak evidence toward `false`
     - `(cnbc.com, settle_time)` → log-time observation added
-    - `(cnbc.com, script_X)` for each skipped script → no update (skipped scripts don't get evidence; only re-run does)
+    - `(cnbc.com, script_X, query, framework_signature, script_needed)` for each skipped script → weak evidence toward `false`
+    - no strong evidence is assigned unless a controlled replay toggles one decision and changes the outcome
 
 End-to-end wall-clock estimate (rough, requires validation):
 - Baseline (current `main`): ~4.2s
-- C2 (full policy): ~1.9s
+- C3 (full policy): ~1.9s
 - Speedup: 2.2× wall-clock
 
 ---
