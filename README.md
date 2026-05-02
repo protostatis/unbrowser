@@ -85,6 +85,22 @@ For pages that *do* need real Chrome (heavy SPAs, JS-challenge bot walls), the b
 ## Quick demo — Hacker News top 3
 
 ```python
+from unbrowser import Client
+
+with Client() as ub:
+    ub.navigate("https://news.ycombinator.com")
+    for s in ub.query(".titleline > a")[:3]:
+        print(s["text"], s["attrs"]["href"])
+```
+
+5 lines, no headless browser install. Output is structured JSON, not 35KB of HTML. The `Client` wrapper handles subprocess lifecycle (atexit reaper so orphans are impossible), JSON-RPC framing, and surfaces real exceptions instead of silent `result` lookups.
+
+<details>
+<summary>Bare-RPC version (if you can't use Python)</summary>
+
+The same demo without the wrapper — useful for languages other than Python or one-shot bash calls. The protocol is JSON-RPC over stdin/stdout, one JSON object per line:
+
+```python
 import subprocess, json
 p = subprocess.Popen(["./target/release/unbrowser"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -100,7 +116,9 @@ for s in call("query", selector=".titleline > a")[:3]:
     print(s["text"], s["attrs"]["href"])
 ```
 
-13 lines, no dependencies, no headless browser install. The output is structured JSON, not 35KB of HTML.
+That's the entire protocol surface. Same shape from any language with subprocess + JSON.
+
+</details>
 
 ## SPA tier — what works, what doesn't
 
