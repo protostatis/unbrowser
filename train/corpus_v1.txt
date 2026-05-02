@@ -1,0 +1,30 @@
+# T1 corpus v1 — the 10-site test set from docs/probabilistic-policy.md §7.1
+# Format: one URL per line, blank lines and # comments ignored.
+# Excluded from policy-affected acceptance runs: any site requiring login
+# state, geolocation-sensitive personalization, or non-deterministic
+# account/cookie state.
+
+# Static SSR — baselines, should be near-instant
+https://news.ycombinator.com/
+https://en.wikipedia.org/wiki/Bayesian_inference
+
+# React/Next SSR + hydration
+https://github.com/anthropics/anthropic-sdk-python
+https://www.npmjs.com/package/react
+
+# Web components
+https://www.reddit.com/r/programming/
+
+# Data-store SPA
+https://www.youtube.com/
+
+# SSR shell + JS-filled cells (the density: likely_js_filled trap)
+https://www.cnbc.com/markets/
+
+# Card grid SPAs (heavy lazy-load via observers)
+https://polymarket.com/
+https://kalshi.com/
+
+# Bot-protected SSR (tests interaction with cookies/challenges; probably
+# 403 or challenge-page during training — that's data too)
+https://www.zillow.com/homes/for_rent/
