@@ -1578,9 +1578,10 @@ dependencies = [
 
 [[package]]
 name = "unbrowser"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
+ "base64",
  "cookie",
  "cookie_store",
  "html5ever",

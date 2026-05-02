@@ -1,6 +1,6 @@
 [package]
 name = "unbrowser"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 description = "Web access for LLM agents. One static binary. No Chrome."
 license = "Apache-2.0"
@@ -8,6 +8,7 @@ repository = "https://github.com/protostatis/unbrowser"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 cookie = "0.18"
 cookie_store = "0.21"
 html5ever = "=0.38.0"

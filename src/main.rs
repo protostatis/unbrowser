@@ -1018,6 +1018,10 @@ impl Session {
         let follow = result.get("follow").and_then(|v| v.as_str()).unwrap_or("");
         if !follow.is_empty() {
             let target = self.resolve_url(follow)?;
+            // If the resolved target is a known tracker URL (Bing/Google/DDG
+            // result-link wrapper), decode to the real destination so we
+            // don't land on the tracker's JS-redirect shell.
+            let target = decode_tracker(&target).unwrap_or(target);
             return self.navigate(&target, false).await;
         }
         Ok(result)
@@ -1116,6 +1120,50 @@ impl Session {
             .map_err(|e| anyhow!("join '{href}': {e}"))?
             .to_string())
     }
+}
+
+// Search engines wrap result links in tracker URLs (so they can record
+// click-throughs) that the destination's own server never sees. When an
+// agent click-follows one of these, the right behavior is to land on the
+// real destination, not the tracker page — which is often a JS-redirect
+// shell our static fetch can't actually follow.
+//
+// Returns Some(decoded_url) for known tracker shapes, None otherwise.
+// Caller (click follow) substitutes the decoded URL when present.
+fn decode_tracker(href: &str) -> Option<String> {
+    use base64::Engine;
+    let parsed = url::Url::parse(href).ok()?;
+    let host = parsed.host_str()?;
+
+    // Bing — bing.com/ck/a?...&u=a1<urlsafe-base64>&...
+    // The 'a1' prefix is Bing's "this is a base64-encoded URL" marker.
+    if host.ends_with("bing.com") && parsed.path() == "/ck/a" {
+        let u = parsed.query_pairs().find(|(k, _)| k == "u")?.1;
+        let payload = u.strip_prefix("a1").unwrap_or(&u);
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload.as_bytes())
+            .ok()?;
+        return String::from_utf8(bytes).ok();
+    }
+
+    // Google — google.com/url?q=<urlencoded>&...
+    // The url crate's query_pairs() already URL-decodes for us.
+    if host.ends_with("google.com") && parsed.path() == "/url" {
+        return parsed
+            .query_pairs()
+            .find(|(k, _)| k == "q")
+            .map(|(_, v)| v.into_owned());
+    }
+
+    // DuckDuckGo HTML version — duckduckgo.com/l/?uddg=<urlencoded>&...
+    if host.ends_with("duckduckgo.com") && parsed.path() == "/l/" {
+        return parsed
+            .query_pairs()
+            .find(|(k, _)| k == "uddg")
+            .map(|(_, v)| v.into_owned());
+    }
+
+    None
 }
 
 fn format_js_exception(ex: rquickjs::Value) -> String {

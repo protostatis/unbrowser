@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, urljoin, urlparse
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 __all__ = ["Client", "UnbrowserError", "find_binary", "navigate", "__version__"]
 
@@ -185,10 +185,18 @@ class Client:
     def search(self, query: str, engine: str = "ddg") -> dict:
         """Search via the named engine; return the navigate result.
 
+        **Always prefer this over manually filling a search-engine form.**
+        Search homepages (Bing especially) JS-inject their visible search
+        input — the cheap path sees only a hidden form with no usable
+        text input, so type/submit fail. This helper builds the search URL
+        directly and bypasses that.
+
         Engines:
             ddg   — DuckDuckGo HTML (default; reliable, returns SSR'd results
                     that the cheap path can extract directly via query()).
-            bing  — Bing search (also works without exec_scripts).
+            bing  — Bing search. Tracker links in results are auto-decoded
+                    on click (the binary detects bing.com/ck/a?u=... URLs
+                    and follows to the real destination).
 
         Google is intentionally NOT supported via the cheap path — Google's
         search page returns ~no useful HTML without JS, so it would silently
