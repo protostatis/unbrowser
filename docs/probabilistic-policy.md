@@ -1,6 +1,6 @@
 # Probabilistic Execution Policy for unbrowser
 
-**Status:** Implementation spec draft
+**Status:** Implementation spec draft (v2 — prefit-first reframe)
 **Author:** unbrowser core
 **Last updated:** 2026-05-02
 
@@ -10,9 +10,11 @@ unbrowser embeds QuickJS, an interpreter ~20–50× slower than V8 on JIT-bound 
 
 We propose a different path: close most of the practical gap with a **probabilistic execution policy layer** that decides what to run, what to skip, what to cache, and how long to wait. The same problem JITs solve (online specialization under uncertainty), framed at the script and API level instead of the bytecode level.
 
-The headline claim: a real Bayesian policy layer is *available to us specifically* because we don't operate under the constraint that defines production JIT design — single-digit-nanosecond decisions on the hot path. We have microsecond-to-millisecond budgets at the policy layer and can afford inference that V8 cannot.
+**Critical product constraint: this works on the *first* navigation, not after 500 visits.** A user whose first navigate to cnbc.com is slow won't run a second. The system therefore ships with a **prefit prior bundle** — per-domain decision parameters trained offline against a curated corpus of the popular long head — so the runtime starts informed, not flat. Top ~10K domains are the training target (covers ~80% of agent navigations by traffic). Per-instance learning is a *refinement* on top of the prefit, not a bootstrap from zero.
 
-Target outcome: at least 50% median wall-clock improvement versus current `main` on a pinned benchmark corpus, with no more than 1% extraction-quality regression and no new stealth detections. The aspirational ceiling is 70-90% of the practical QuickJS-vs-V8 wall-clock gap on pages where most work is avoidable framework, telemetry, animation, or observer churn.
+The headline claim: a real Bayesian policy layer is *available to us specifically* because (a) we don't operate under the constraint that defines production JIT design — single-digit-nanosecond decisions on the hot path — and (b) we ship the prior with the binary instead of asking each user to learn it.
+
+Target outcome: at least 50% median wall-clock improvement versus current `main` on a pinned benchmark corpus **on the first navigate to a prefit-covered domain**, with no more than 1% extraction-quality regression and no new stealth detections. The aspirational ceiling is 70-90% of the practical QuickJS-vs-V8 wall-clock gap on pages where most work is avoidable framework, telemetry, animation, or observer churn.
 
 ---
 
@@ -57,6 +59,28 @@ Most of the recoverable perf is in decisions:
 
 Each of these is a decision under uncertainty with cheap evidence. Perfect setting for a probabilistic policy.
 
+### 1.4 First navigate is the adoption gate
+
+The original draft of this design assumed each user's instance would learn its own per-site posteriors over time. That model has a fatal product flaw: **cold start dominates.**
+
+- Most agent workloads touch the long tail (different sites every navigate)
+- Per-site Bayesian learning needs ~hundreds of trials per `(domain × decision)` to converge
+- A user whose first navigate is slow churns before the system ever learns anything
+- Even for users with temporal locality, the learning happens too slowly relative to product expectations
+
+The fix is to **ship the prior, don't learn it**. A centralized offline pipeline runs the binary against a curated corpus of the popular long head (top ~10K domains by traffic, which covers ~80% of agent navigations). It collects Phase A observability events at scale, aggregates them into per-`(domain, framework, task)` decision parameters, and packs the result into a **prefit bundle** that ships with releases (or downloads on first run).
+
+At runtime, the binary is mostly an **inference engine**:
+
+1. Look up `(domain)` in prefit → if hit, decisions are instant
+2. If miss, fall back to `(framework_signature)` coarse prior in the prefit
+3. If still miss, structural prior (Tier-1 blocklist + framework defaults)
+4. Optional per-user overlay store for users with consistent workloads on uncovered domains
+
+This changes the Bayesian story from "learn slowly per user" to "ship a trained model, refine at the edges." Per-user state stays small. Cold start is rare. Privacy is easy (the prefit ships as static data; user observations don't leave the machine unless they opt in to contribute back to training).
+
+The white paper from §6 onward used to read as "online learning per user." That was wrong. The architecture is **offline trained prior + thin runtime inference**, and the implementation phases below are restructured to reflect that.
+
 ---
 
 ## 2. Background
@@ -94,43 +118,55 @@ This is the gap in production JIT design we can exploit. We get to build the eng
 
 ## 3. Architecture
 
-### 3.1 Two-layer design
+### 3.1 Three-tier architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Bayesian Policy Layer                          │
-│  (microsecond-to-millisecond decisions)         │
-│  - script filter                                │
-│  - API stub activation                          │
-│  - settle deadline                              │
-│  - bytecode cache eviction                      │
-│  - speculative preload                          │
-└─────────────────────────────────────────────────┘
-                      │
-                      │ policy decisions
-                      ▼
-┌─────────────────────────────────────────────────┐
-│  Frequentist Hot Path                           │
-│  (nanosecond decisions, fixed-size state)       │
-│  - QuickJS interpreter                          │
-│  - shim invocation                              │
-│  - sufficient-statistic collection              │
-└─────────────────────────────────────────────────┘
-                      │
-                      │ profile data
-                      ▼
-              [profile event stream]
-                      │
-                      ▼
-┌─────────────────────────────────────────────────┐
-│  Posterior Store                                │
-│  (per-domain, per-framework priors)             │
-│  - sqlite or jsonl                              │
-│  - conjugate posteriors, cheap online updates   │
-└─────────────────────────────────────────────────┘
+                  OFFLINE (centralized, runs weekly/monthly)
+┌──────────────────────────────────────────────────────────┐
+│  Training pipeline                                       │
+│  - drives binary against curated corpus (top ~10K        │
+│    domains × task classes × policy toggles)              │
+│  - aggregates Phase A NDJSON events                      │
+│  - fits per-(domain, framework, task) decision params    │
+│  - packs into prefit.bundle (read-only data file)        │
+└──────────────────────────────────────────────────────────┘
+                           │
+                           │  prefit.bundle (~10–50 MB)
+                           ▼  (shipped with release or downloaded once)
+
+                  RUNTIME (the binary)
+┌──────────────────────────────────────────────────────────┐
+│  Inference layer                                         │
+│  (μs decisions: lookup + fallback chain)                 │
+│                                                          │
+│  per-navigation:                                         │
+│  1. lookup prefit[domain]               → if hit, apply  │
+│  2. else lookup prefit[framework_sig]   → coarse prior   │
+│  3. else structural prior (Tier-1 blocklist + defaults)  │
+│  4. optional: per-user overlay (~/.unbrowser/refine.db)  │
+└──────────────────────────────────────────────────────────┘
+                           │
+                           │ policy decisions
+                           ▼
+┌──────────────────────────────────────────────────────────┐
+│  Frequentist Hot Path                                    │
+│  (nanosecond decisions, fixed-size state)                │
+│  - QuickJS interpreter                                   │
+│  - shim invocation                                       │
+│  - sufficient-statistic collection                       │
+└──────────────────────────────────────────────────────────┘
+                           │
+                           │ profile data (Phase A events)
+                           ▼
+              [profile event stream → stderr NDJSON]
+                           │
+                           ├──► local: optional per-user overlay update
+                           └──► opt-in: contribute back to training corpus
 ```
 
-The hot path does not change semantically. It collects sufficient statistics (counts, hashes) into fixed-size structures. The policy layer reads those statistics and makes decisions. The posterior store carries learning across sessions.
+The runtime is mostly an **inference engine** doing prefit lookups + fallback. There is no large per-user database; per-user state is a small overlay (typically <100 KB) that refines prefit decisions for sites the user hits frequently. All the heavy lifting (corpus collection, aggregation, parameter fitting) is offline and centralized. Updates ship as new prefit bundles on a regular cadence.
+
+The hot path does not change semantically. It collects sufficient statistics (counts, hashes) into fixed-size structures. The inference layer reads those statistics for the current navigation and makes decisions; the prefit holds the prior knowledge that informs those decisions on first sight.
 
 ### 3.2 Five decision points
 
@@ -308,117 +344,179 @@ The use of the upper CI bound (rather than mean or lower bound) is the conservat
 
 ## 6. Implementation plan
 
-### Phase A — Profile collection infrastructure (1–2 weeks)
+The plan is reorganized around the prefit-first architecture from §1.4 / §3.1. Old phase numbering (A–H) was a per-user-learning sequence and is superseded. The new structure has three tracks: **Runtime**, **Offline training**, and **Optional refinement**.
 
-**Goal:** Make the system observable enough to learn from without changing runtime behavior.
+### Track 1 — Runtime (in the binary)
 
-- Extend NDJSON event stream on stderr to emit:
-  - `navigation_started {navigation_id, url, domain, task_id?, task_class?, policy_seed}`
-  - `script_loaded {navigation_id, script_id, url, host, size, content_hash, features}`
-  - `script_decision {navigation_id, script_id, action: "run|skip", reason, posterior?, structural_prior}`
-  - `script_executed {navigation_id, script_id, duration_us, error?}`
-  - `api_policy {navigation_id, api_name, action: "stub|full|promoted", reason, posterior?}`
-  - `api_called {navigation_id, api_name, count}` (for rAF, observers)
-  - `settle_observed {navigation_id, ms_since_navigate, dom_mutations_since_last}`
-  - `policy_trace {navigation_id, decisions, cache_hits, settle_deadline_ms}`
-- Add `report_outcome {navigation_id, task_id, task_class, success, quality?, required_selectors?, error?}` to the driver-facing API.
-- Add an optional `--profile-log path` flag for a `tail -f`-friendly JSONL file. Default behavior emits NDJSON only for the current process and does not persist user browsing profiles.
-- Every event is schema-versioned with `schema_version`.
+#### Phase A1 — Runtime observability ✅ shipped (PR #4)
 
-**Deliverable:** Run unbrowser against the test corpus, get readable profile data, and bind each driver outcome to exactly one navigation trace.
+NDJSON event stream is live: `navigation_started`, `script_decision`, `script_executed`, `policy_trace`, `outcome_reported`. All carry `schema_version: 1` and `navigation_id`. `report_outcome` RPC method validates inputs. Pairing invariant: `navigation_started` ↔ `policy_trace` always emit together.
 
-### Phase B — Posterior store (1 week)
+This is the foundation for both **offline training data collection** (drive the binary, scrape stderr) and **optional online refinement** (consume own events, update local overlay).
 
-**Goal:** Persist and query priors per policy key.
+#### Phase R1 — Prefit loader (~3 days)
 
-- Store location: process-local in-memory by default; persistent SQLite only when `--prior-store path` is supplied. A convenience default such as `~/.unbrowser/priors.db` is acceptable for the CLI, but shared-service callers must opt in explicitly.
-- Schema: `posteriors(scope, key, alpha, beta, n_observations, last_updated, schema_version)`
-- Online update API: `prior_store.update(scope, key, outcome: bool, weight: f64, evidence_source)`
-- Query API: `prior_store.posterior(domain, key) -> Beta(α, β)`
-- Keys include the policy dimension: script keys include `(domain, script_url_pattern, content_hash_prefix, task_class, framework_signature)`; API keys include `(domain, api_name, task_class, framework_signature)`.
-- TTL on posteriors: priors decay if `last_updated > 30 days` (concept drift defense)
-- Cap effective sample size (`alpha + beta <= 1000`) so old evidence can be overcome.
-- Use WAL mode and batched writes; the hot path records observations to an in-memory queue and the policy updater owns SQLite writes.
+Read-only access to the shipped prefit bundle.
 
-**Deliverable:** Round-trip `update → query` works in memory; when `--prior-store` is set, the posterior also survives process restart.
+- Format: **MessagePack** (binary, fast), indexed by domain, with a header containing schema_version, fit_timestamp, and supported framework signatures
+- Location: bundled in binary via `include_bytes!` for v1 (~10 MB acceptable; revisit if it grows past ~30 MB), then move to `~/.unbrowser/prefit/v{N}.bundle` with first-run download
+- Loader API:
+  ```rust
+  pub struct Prefit { /* mmap'd or in-memory */ }
+  impl Prefit {
+      pub fn lookup(&self, domain: &str) -> Option<&DomainPrefit>;
+      pub fn fallback(&self, framework: FrameworkSig) -> &FrameworkPrefit;
+      pub fn schema_version(&self) -> u32;
+      pub fn fit_timestamp(&self) -> SystemTime;
+  }
+  ```
+- Emits `prefit_lookup` event per navigation: `{navigation_id, domain, hit: bool, fallback_used: "framework|structural", fit_age_days}` so drivers can see whether a navigation was prefit-covered.
 
-### Phase C — Bytecode cache (1 week)
+**Deliverable:** Binary ships with a v0 prefit (even hand-curated for the 10-site test corpus is fine to start) and the inference layer queries it.
 
-**Goal:** Stop re-parsing the same scripts.
+#### Phase R2 — Inference layer / fallback chain (~3 days)
+
+Wire prefit into the existing decision points.
+
+- Script-skip: prefit's `blocklist_additions[domain]` extends the Tier-1 blocklist for that nav. Prefit's `required_patterns[domain]` overrides Tier-1 false positives.
+- API decisions: prefit's `api_decisions[domain][api_name]` tells the policy whether to stub, coalesce, or run full. Default is current shim behavior; prefit overrides per-site.
+- Settle: prefit's `settle_distribution[domain]` provides `quantile(0.9)` deadline. Default is current 5s ceiling.
+- Fallback chain: `(domain) → (framework_signature) → structural`. The framework_signature lookup uses cheap window-global probes (does `window.React` exist? `window.__NEXT_DATA__`? etc.) computed during navigate.
+
+**Deliverable:** When `--prefit=on` (default true once R1+R2 land), policy decisions use prefit values; when off, current behavior preserved.
+
+#### Phase C — Bytecode cache (~5 days, unchanged from previous plan)
+
+Independent of prefit work; can land in parallel.
 
 - Hook into the script loader: before compiling, check cache
-- Cache key includes `sha256(script_content)`, QuickJS/rquickjs version, target triple, bytecode format version, module-vs-script mode, compile flags, and `sha256(shims.js)` when shims can affect compilation context. URL is metadata, not identity.
+- Cache key: `sha256(script_content)` + QuickJS/rquickjs version + target triple + bytecode format version + module-vs-script mode + `sha256(shims.js)`. URL is metadata, not identity.
 - Backing store: `~/.unbrowser/bytecode/{prefix}/{hash}.qbc`
 - Use QuickJS `JS_WriteObject` / `JS_ReadObject`
-- Only load bytecode produced locally by this binary/configuration. Never accept remote or starter-pack bytecode; shipped priors are data, not executable artifacts.
+- **Only load bytecode produced locally** by this binary/configuration. Never accept remote or prefit-shipped bytecode; the prefit ships as data, not executable artifacts.
 - LRU eviction with size cap (default 500 MB)
-- Future: replace LRU with expected-future-value eviction (Phase G)
 
-**Deliverable:** Second navigation to same domain reuses bytecode; measurable parse-time reduction.
+**Deliverable:** Second navigation to same script content reuses bytecode; measurable parse-time reduction on repeat visits to the same site.
 
-### Phase D — Script filter (1–2 weeks)
+### Track 2 — Offline training (separate pipeline, not in the binary)
 
-**Goal:** Skip scripts that don't matter.
+This is where the real science happens. Lives in a sibling directory (`unbrowser-train/`) or a separate repo.
 
-- Bootstrap with structural priors:
-  - Hostname matched against EasyList → strong skip prior
-  - Hostname matched against framework CDN allowlist → strong run prior
-  - Default → uninformative prior, run by default
-- Hook between HTML parse and script execution
-- Emit `script_skipped` events for visibility
-- Skip decision uses the upper credible bound for `P(script_needed)` (conservative)
-- Unknown scripts run by default unless a structural prior is strong enough to make the upper bound safe.
-- All skip decisions are reversible by per-navigation override (`run_all_scripts`) and by targeted failure replay.
+#### Phase T1 — Corpus collection harness (~5 days)
 
-**Deliverable:** Measurable script-execution-count reduction on commercial pages with no extraction quality regression.
+Scripted multi-pass collection.
 
-### Phase E — Adaptive API stubs (1–2 weeks)
+- Inputs: `corpus.txt` (initially the 10-site test corpus, then 1K, then 10K), policy-toggle matrix
+- For each `(domain, task_class, policy_config)`: navigate, drive an extraction task, capture all NDJSON events to JSONL
+- Budget: ~30 navs per domain (covers baseline + various skip / stub / settle toggles for replay-style strong evidence)
+- Output: `corpus_runs/{domain}/{run_id}.jsonl` — one file per run
+- Politeness: rate-limit per host, respect robots, stop early on bot challenges (let the auto-escalation router handle it during training too)
 
-**Goal:** Stub expensive observer APIs by default; activate per-domain when needed.
+**Deliverable:** Run end-to-end against the 10-site corpus, produce structured JSONL output.
 
-- Default stubs in `shims.js`:
-  - `rAF` → coalesced (run callback once, don't re-schedule)
-  - `IntersectionObserver` → returns "all entries intersecting" synchronously
-  - `MutationObserver` → no-op queue
-  - `ResizeObserver` → fires once with viewport dims
-- Per-domain override: if posterior says "needed," install full implementation
-- Driver hook: agent can force-activate for sites where it matters
-- Use the outcome protocol before updating API posteriors; a failed task does not by itself prove a stub was responsible.
+#### Phase T2 — Aggregation + parameter fitting (~5 days)
 
-**Deliverable:** Pages that lazy-load on scroll suddenly settle in one tick on stub-OK domains; no regressions on stub-NOT-OK domains.
+JSONL → prefit parameters.
 
-### Phase F — Settle deadline learner (1 week)
+- Per `(domain, framework, task_class)`: aggregate `script_decision` outcomes paired with `outcome_reported` to compute conjugate posteriors
+- Per `(domain, api_name, task_class)`: same for API decisions
+- Per `(domain, framework)`: compute settle-time distribution (mean, p50, p90, p95) from `settle` field of `policy_trace` paired with successful outcomes
+- Discover blocklist additions: scripts that were systematically present and whose absence didn't reduce extraction quality
+- Discover required patterns: scripts whose absence caused systematic failures
+- Output: per-domain JSON entries
 
-**Goal:** Replace fixed timeout with per-domain learned distribution.
+**Deliverable:** A `.json` per training-corpus domain with fitted decision parameters.
 
-- Track time-to-quiescence per `(domain, framework_detected)` tuple
-- Posterior predictive over settle time
-- New navigate option: `wait_settle: true` uses 0.9-quantile + small buffer
-- Hard ceiling override (default 5s, configurable)
-- Outcome updates can shift the deadline later when successful extraction requires elements that appeared after the learned deadline.
+#### Phase T3 — Prefit packing + validation (~3 days)
 
-**Deliverable:** p50 settle time drops on simple sites without regressing complex ones.
+Aggregated entries → shipped binary format.
 
-### Phase G — Cross-session prior persistence + advanced eviction (1 week)
+- Pack into MessagePack with domain-indexed lookup table
+- Validate against a holdout split: predict decisions on held-out sites, measure prediction quality
+- Stamp `fit_timestamp`, `schema_version`, `corpus_size`
+- Output: `prefit/v1.bundle`
 
-**Goal:** Make all the above work survive process restart and benefit from accumulated learning.
+**Deliverable:** A bundle that can be loaded by Phase R1's loader and demonstrably improves first-navigate behavior on holdout sites.
 
-- Already partly in B for opt-in persistent stores. This phase:
-  - Replaces LRU bytecode eviction with expected-future-value
-  - Adds prior-bundling: ship a "starter pack" of priors for top-1000 domains
-  - Adds `unbrowser export-priors` / `import-priors` CLI for sharing/auditing
+### Track 3 — Optional per-user refinement (post-v1)
 
-**Deliverable:** Fresh installs perform near-warmed-up performance via shipped priors.
+Ship Tracks 1 and 2 first. Refinement is meaningful only for users with consistent workloads on uncovered domains; most users won't need it.
 
-### Phase H — (optional, post-v1) Speculative preload
+#### Phase U1 — Per-user overlay store (~3 days)
 
-**Goal:** Use link-graph priors to preload likely next navigations.
+- Tiny SQLite at `~/.unbrowser/refinement.db`, off by default, opt-in via `--refine=on`
+- Captures the user's own outcome events, fits per-`(domain, decision)` posteriors using the same conjugate updates
+- At decision time: if user-overlay has `n_observations > threshold` for a key, blend with prefit (e.g., weighted mean of `Beta(α_prefit, β_prefit) + Beta(α_user, β_user)`)
+- Cap state: hard limit on entries (LRU); never exceeds ~5 MB
 
-- Per-domain Markov chain over link patterns
-- On navigate, prefetch top-K likely next URLs (HEAD or partial GET)
-- Background bytecode-precompile of cached scripts likely to be hit
+**Deliverable:** Power users with workload on long-tail domains get personalized improvement; everyone else is unaffected.
 
-Skip unless Phase A–G results justify the additional complexity.
+#### Phase U2 — Opt-in contribution back to training (~3 days)
+
+- `unbrowser contribute --to=https://...` uploads anonymized event JSONL to the training pipeline
+- Strict redaction: URLs hashed (only the domain remains), no body, no cookies, no form data, no selectors
+- Disabled by default; clear consent flow
+
+**Deliverable:** Training corpus grows from real-world usage.
+
+### Phase H — (optional) Speculative preload
+
+Unchanged from previous plan. Skip unless Tracks 1+2 leave headroom on the success criteria.
+
+---
+
+## 6.5 Prefit data format
+
+The prefit bundle is a single binary file shipped with the release (or downloaded once on first run). MessagePack for compactness + fast deserialization; a domain-indexed lookup table at the head allows O(1) lookup without deserializing unrelated entries.
+
+```
+prefit.bundle (binary, MessagePack)
+├─ header
+│  ├─ schema_version: u32
+│  ├─ fit_timestamp: u64 (unix seconds)
+│  ├─ fit_corpus_size: u32 (number of training navigations)
+│  ├─ training_pipeline_version: string
+│  └─ supported_framework_signatures: [string]
+├─ domain_index: HashMap<String, ByteOffset>
+├─ framework_priors: HashMap<FrameworkSig, FrameworkPrefit>
+└─ domain_entries: [DomainPrefit]
+```
+
+A single `DomainPrefit` row, ~1 KB compressed:
+
+```jsonc
+{
+  "domain": "cnbc.com",
+  "framework": "react-18",
+  "fit_corpus_size": 30,                  // training nav count for this domain
+  "fit_timestamp": 1746230400,
+  "blocklist_additions": [
+    "zephr-templates.cnbc.com/personalize.js",
+    "assets.bounceexchange.com/*"          // glob — supports tail wildcards
+  ],
+  "required_patterns": [
+    "i.cnbc.com/_next/static/chunks/framework-*.js"
+  ],
+  "api_decisions": {
+    "intersection_observer": {"action": "stub", "alpha": 1.5, "beta": 28.0},
+    "mutation_observer":     {"action": "full", "alpha": 12.0, "beta": 2.0},
+    "request_animation_frame": {"action": "coalesce", "alpha": 1.0, "beta": 30.0}
+  },
+  "settle_distribution": {
+    "p50_ms": 1800, "p90_ms": 2500, "p95_ms": 4000,
+    "extraction_succeeds_at_p90_pct": 0.96
+  },
+  "shape_hint": "spa_shell_with_density"   // see CLAUDE.md BlockMap density
+}
+```
+
+`FrameworkPrefit` has the same shape but with `domain` replaced by `framework_signature` and aggregated stats over all training domains using that framework. This is the second-tier fallback when a domain isn't in the prefit but its framework is recognized at runtime.
+
+**Versioning:** the binary's prefit loader checks `schema_version` and rejects bundles with a higher version (forward-incompatible) or older than `min_schema_version` (back-incompatible). Releases bump versions only when the runtime-loadable schema changes; routine retraining bumps `fit_timestamp` only and ships under the same `schema_version`.
+
+**Audibility:** the bundle is plain MessagePack, no executable artifacts. `unbrowser prefit dump --domain=cnbc.com` will print the entry as JSON for inspection. The training pipeline keeps the source JSONL events for any shipped bundle, so any decision can be traced back to its training observations.
+
+**Update cadence:** v1 ships hand-curated entries for the 10-site test corpus (covers the demoable case). v2+ ships pipeline-trained bundles refreshed weekly or monthly.
 
 ---
 
@@ -450,27 +548,34 @@ Excluded from policy-affected acceptance runs: any site requiring login state, g
 
 ### 7.2 Metrics
 
+The product framing in §1.4 ("first navigate is the adoption gate") drives the metric priorities — `first_nav_*` rows are the headline acceptance criteria, `repeat_nav_*` rows are nice-to-haves.
+
 | Metric | What it measures | Target |
 |---|---|---|
-| `wall_clock_to_blockmap_ms` | Time from navigate to inline blockmap returned | -50% median, -70% p90 vs baseline |
-| `wall_clock_to_settle_ms` | Time from navigate to declared settled | -60% median |
+| **first_nav_wall_clock_ms (prefit-covered)** | Time to blockmap on **first** visit to a domain in prefit | **-50% median, -70% p90 vs baseline** |
+| **first_nav_extraction_success_pct** | Agent task succeeds on first visit, prefit-covered domain | **≥ 99% of baseline** |
+| `first_nav_wall_clock_ms (prefit-miss)` | First visit to a domain *not* in prefit | ≤ 5% regression vs baseline |
+| `prefit_hit_rate` | (navigations to prefit-covered domains) / (total navigations) on a representative workload | ≥ 80% on the corpus |
+| `repeat_nav_wall_clock_ms` | Wall-clock on 2nd+ visit (with bytecode cache active) | -60% median vs baseline |
 | `scripts_executed_count` | Number of `<script>` tags actually run | -50% on commercial sites, ≤baseline elsewhere |
 | `scripts_skipped_count` | Number skipped by policy | report only |
-| `extraction_success_rate` | Did agent task complete? | ≥ 99% of baseline |
 | `blockmap_completeness` | # interactives + # headings detected | ≥ 95% of baseline |
 | `query_result_accuracy` | For 10 fixed queries per site | ≥ 99% of baseline |
 | `bytecode_cache_hit_rate` | Hits / (hits + misses) | ≥ 80% on second+ visit |
 | `stealth_signal_count` | Bot-detection probes that fire | ≤ baseline (no regressions) |
-| `binary_size_mb` | Stripped release binary | unchanged (no new bundled engines) |
+| `binary_size_mb` | Stripped release binary (incl. bundled prefit) | ≤ baseline + 30 MB (acceptable cost of first-nav speedup) |
 
 ### 7.3 Configurations
 
-Three configurations, paired across all targets:
+Five configurations, paired across all targets. Holding prefit constant tests the runtime; varying prefit tests the training pipeline.
 
-- **C0 (baseline)**: current `main`, no policy
-- **C1 (observability only)**: Phase A enabled, no behavior-changing decisions. This must be performance-neutral enough to leave enabled for debugging.
-- **C2 (cache + settle)**: bytecode cache + settle learner (Phases C, F)
-- **C3 (full)**: all phases A–G
+- **C0 (baseline)**: current `main`, no policy, no prefit
+- **C1 (observability only)**: Phase A1 enabled, no behavior-changing decisions. Performance-neutral baseline for comparison.
+- **C2 (cache only)**: bytecode cache (Phase C) — repeat-visit win, no first-visit win
+- **C3 (prefit + cache, no overlay)**: Phases R1+R2+C with shipped prefit. **This is the headline configuration** — first-nav speedup from prefit, repeat-nav from cache.
+- **C4 (full incl. refinement)**: C3 + per-user overlay (Phase U1). Tests whether refinement adds anything for users with workload concentration.
+
+Acceptance is on **C3 vs C0** for first-nav metrics; **C2 vs C0** for repeat-nav; **C4 vs C3** as the marginal gain from refinement (expected small).
 
 ### 7.4 Methodology
 
@@ -488,24 +593,27 @@ A change is considered an improvement only if the lower CI bound is on the favor
 
 ### 7.5 Acceptance criteria
 
-The implementation ships when:
+The implementation ships when (all measured on **the first navigate** to each domain in the corpus, fresh process, no warmup):
 
-- C1 vs C0: median wall-clock regression < 5% (observability is cheap enough)
-- C3 vs C0: median wall-clock improvement ≥ 50% across the replay corpus, lower CI bound > 30%
-- C3 vs C0: extraction success rate change is in `[-1%, +∞)` (i.e., no meaningful regression)
+- **C3 vs C0 on prefit-covered first-nav: median wall-clock improvement ≥ 50%, lower CI bound > 30%** (the headline product metric — the user's first impression)
+- **C3 vs C0: extraction success rate change is in `[-1%, +∞)` on prefit-covered domains** (no quality regression for what we promise to handle)
+- C3 vs C0 on prefit-miss first-nav: wall-clock regression ≤ 5% (uncovered domains are no worse than baseline)
 - C3 vs C0: stealth signal count is in `(-∞, +0)` (no new detections)
-- C2 alone: at least 30% wall-clock improvement (sanity check that cache and settle learner pull weight)
-- All probabilistic state is migratable across schema versions
+- C2 alone (cache only) on repeat-nav: ≥ 30% wall-clock improvement (sanity check on the cache)
+- Prefit hit rate ≥ 80% on the test corpus (otherwise the headline metric isn't actually testing the headline)
+- C1 vs C0: median wall-clock regression < 5% (observability is cheap enough to leave on)
+- All schema-versioned state is migratable across versions
 
-If any criterion fails, ship the components that pass and revisit the failing one.
+If any criterion fails, ship the components that pass and revisit the failing one. The first two are non-negotiable for the product framing in §1.4 — without them, the prefit-first architecture is unjustified.
 
 ### 7.6 Adversarial testing
 
-Beyond corpus performance, three adversarial tests:
+Beyond corpus performance, four adversarial tests:
 
-1. **Profile poisoning**: simulate a site that changes its bundle. Verify posterior decay catches the drift within N visits.
-2. **Stealth probe**: load fingerprint.com or similar. Verify policy-skipped scripts don't include fingerprinting probes the page expects.
-3. **Cold-start performance**: fresh install with no priors. Verify performance is no worse than C0 (uninformative priors should default to baseline behavior).
+1. **Prefit drift**: simulate a site that redeploys its bundle (changes `framework_signature` or breaks a `required_pattern`). Verify the runtime falls back to coarser tier safely; verify the training pipeline detects the drift on the next collection cycle.
+2. **Stealth probe**: load fingerprint.com or similar. Verify prefit's `blocklist_additions` don't include fingerprinting probes the page expects.
+3. **Cold-start performance (no prefit hit)**: visit a domain not in prefit, with a fresh process. Verify performance is no worse than C0 (structural-prior fallback should default to baseline behavior).
+4. **Stale prefit**: artificially advance the system clock by 6 months. Verify the runtime warns about prefit staleness and offers to refresh; verify decisions still default to safe behavior.
 
 ---
 
@@ -586,12 +694,15 @@ QuickJS bytecode is an internal executable representation, not a stable or safe 
 
 The work is successful if six months after merging:
 
-1. **Perf**: ≥ 50% median wall-clock improvement on the corpus (target: 70%, ceiling: ~85% — past that we're in the JIT-only territory).
-2. **Quality**: Extraction success rate within 1% of baseline.
-3. **Stealth**: No new detections on commodity-tier bot-protected sites.
-4. **Maintainability**: Total LOC added < 5,000 (Rust + JS combined).
-5. **Engine independence**: Policy layer is engine-agnostic — could swap to PrimJS or future QuickJS-NG without policy changes.
-6. **Auditable**: Posterior store is human-readable; any decision can be traced to its evidence.
+1. **First-nav perf** (the headline product metric per §1.4): ≥ 50% median wall-clock improvement on the prefit-covered subset of the corpus, on the *first* visit to each domain (no warmup). Target 70%; ceiling ~85% past which we're in JIT-only territory.
+2. **First-nav quality**: Extraction success rate within 1% of baseline on prefit-covered domains.
+3. **Coverage**: Prefit hit rate ≥ 80% on a representative agent workload.
+4. **Stealth**: No new detections on commodity-tier bot-protected sites.
+5. **Cold-miss safety**: First-nav on uncovered domains is ≤ 5% worse than baseline (the prefit-miss path doesn't pessimize).
+6. **Maintainability**: Total runtime LOC added < 5,000 (Rust + JS). Training-pipeline LOC is separate and unbounded — it's not in the binary.
+7. **Engine independence**: Inference layer is engine-agnostic — could swap to PrimJS or future QuickJS-NG without policy changes.
+8. **Auditable**: Prefit bundle is `unbrowser prefit dump`'able; any decision can be traced to its training observations via the pipeline's retained JSONL.
+9. **Refresh cadence**: Training pipeline runs at least monthly; prefit ships under semver-compatible bumps for routine retraining.
 
 ---
 
