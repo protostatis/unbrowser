@@ -1,0 +1,203 @@
+[
+  {
+    "off": {
+      "url": "https://news.ycombinator.com/",
+      "policy_block": false,
+      "status": 200,
+      "bytes": 34844,
+      "wall_ms": 1174.3,
+      "scripts": {
+        "inline": 0,
+        "external": 1,
+        "async": 0,
+        "policy_blocked": 0,
+        "executed": 1,
+        "errors": 0,
+        "fetch_errors": 0
+      },
+      "policy_events": []
+    },
+    "on": {
+      "url": "https://news.ycombinator.com/",
+      "policy_block": true,
+      "status": 200,
+      "bytes": 34844,
+      "wall_ms": 704.5,
+      "scripts": {
+        "inline": 0,
+        "external": 1,
+        "async": 0,
+        "policy_blocked": 0,
+        "executed": 1,
+        "errors": 0,
+        "fetch_errors": 0
+      },
+      "policy_events": []
+    }
+  },
+  {
+    "off": {
+      "url": "https://www.cnbc.com/markets/",
+      "policy_block": false,
+      "status": 200,
+      "bytes": 1546567,
+      "wall_ms": 4494.0,
+      "scripts": {
+        "inline": 3,
+        "external": 2,
+        "async": 1,
+        "policy_blocked": 0,
+        "executed": 5,
+        "errors": 0,
+        "fetch_errors": 0
+      },
+      "policy_events": []
+    },
+    "on": {
+      "url": "https://www.cnbc.com/markets/",
+      "policy_block": true,
+      "status": 200,
+      "bytes": 1546506,
+      "wall_ms": 4356.3,
+      "scripts": {
+        "inline": 3,
+        "external": 1,
+        "async": 0,
+        "policy_blocked": 1,
+        "executed": 4,
+        "errors": 0,
+        "fetch_errors": 0
+      },
+      "policy_events": [
+        {
+          "category": "tag_manager",
+          "kind": "static_script",
+          "matched": "assets.adobedtm.com",
+          "url": "https://assets.adobedtm.com/77ca722dd820/bbaaa56c8833/launch-50229149d3cf.min.js"
+        }
+      ]
+    }
+  },
+  {
+    "off": {
+      "url": "https://www.forbes.com/",
+      "policy_block": false,
+      "status": 200,
+      "bytes": 798416,
+      "wall_ms": 30018.3,
+      "scripts": {
+        "inline": 5,
+        "external": 21,
+        "async": 0,
+        "policy_blocked": 0,
+        "executed": 20,
+        "errors": 6,
+        "fetch_errors": 0
+      },
+      "policy_events": []
+    },
+    "on": {
+      "url": "https://www.forbes.com/",
+      "policy_block": true,
+      "status": 200,
+      "bytes": 798416,
+      "wall_ms": 30017.5,
+      "scripts": {
+        "inline": 5,
+        "external": 20,
+        "async": 0,
+        "policy_blocked": 1,
+        "executed": 19,
+        "errors": 6,
+        "fetch_errors": 0
+      },
+      "policy_events": [
+        {
+          "category": "consent_cmp",
+          "kind": "static_script",
+          "matched": "cdn.ketchjs.com",
+          "url": "https://cdn.ketchjs.com/plugins/v1/tcf/stub.js"
+        }
+      ]
+    }
+  },
+  {
+    "off": {
+      "url": "https://www.theverge.com/",
+      "policy_block": false,
+      "status": 200,
+      "bytes": 1098762,
+      "wall_ms": 30324.2,
+      "scripts": {
+        "inline": 2,
+        "external": 25,
+        "async": 10,
+        "policy_blocked": 0,
+        "executed": 15,
+        "errors": 12,
+        "fetch_errors": 0
+      },
+      "policy_events": []
+    },
+    "on": {
+      "url": "https://www.theverge.com/",
+      "policy_block": true,
+      "status": 200,
+      "bytes": 1098762,
+      "wall_ms": 30019.1,
+      "scripts": {
+        "inline": 2,
+        "external": 18,
+        "async": 3,
+        "policy_blocked": 7,
+        "executed": 14,
+        "errors": 6,
+        "fetch_errors": 0
+      },
+      "policy_events": [
+        {
+          "category": "ads",
+          "kind": "static_script",
+          "matched": "config.aps.amazon-adsystem.com",
+          "url": "https://config.aps.amazon-adsystem.com/configs/3176"
+        },
+        {
+          "category": "ads",
+          "kind": "static_script",
+          "matched": "client.aps.amazon-adsystem.com",
+          "url": "https://client.aps.amazon-adsystem.com/publisher.js"
+        },
+        {
+          "category": "consent_cmp",
+          "kind": "static_script",
+          "matched": "cdn.cookielaw.org",
+          "url": "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js"
+        },
+        {
+          "category": "tag_manager",
+          "kind": "static_script",
+          "matched": "googletagservices.com",
+          "url": "https://www.googletagservices.com/tag/js/gpt.js"
+        },
+        {
+          "category": "ads",
+          "kind": "static_script",
+          "matched": "cdn.concert.io",
+          "url": "https://cdn.concert.io/lib/concert-ads/v2-latest/concert_ads.js"
+        },
+        {
+          "category": "ads",
+          "kind": "static_script",
+          "matched": "cdn.concert.io",
+          "url": "https://cdn.concert.io/lib/concert-concierge.2.10.1.min.js"
+        },
+        {
+          "category": "ads",
+          "kind": "static_script",
+          "matched": "pub.doubleverify.com",
+          "url": "https://pub.doubleverify.com/dvtag/21236410/DV464041/pub.js"
+        }
+      ]
+    }
+  }
+]
