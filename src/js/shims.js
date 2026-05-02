@@ -389,7 +389,7 @@
           isIntersecting: true,
           intersectionRatio: 1,
           target: target,
-          time: (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(),
+          time: performance.now(),
           boundingClientRect: syntheticBoundingRect(),
           intersectionRect: syntheticBoundingRect(),
           rootBounds: syntheticBoundingRect(),
@@ -554,8 +554,28 @@
     }
   };
 
-  // PerformanceObserver stays no-op — pages don't gate content delivery
-  // on perf entries, and we don't generate any.
+  // Cross-navigate cleanup. dom.js's __seedDOM clears __nodeRegistry; we
+  // additionally need to disconnect any MutationObservers registered by
+  // the previous page's scripts so their callbacks don't fire on the new
+  // page's mutations (PR #8 review HIGH). Pending records on each are
+  // also dropped — they reference now-detached nodes and would surface
+  // page A data inside page B's callback. The corresponding hook lives in
+  // dom.js's __seedDOM.
+  globalThis.__resetActiveMutationObservers = function() {
+    for (var i = 0; i < __activeMutationObservers.length; i++) {
+      var o = __activeMutationObservers[i];
+      o._observed = [];
+      o._records = [];
+      o._scheduled = false;
+    }
+    __activeMutationObservers = [];
+  };
+
+  // PerformanceObserver stays no-op. We don't generate perf entries and
+  // pages don't gate content delivery on them. Kept as a small unused
+  // class because the ContentKind-style enum split for these doesn't
+  // earn its keep — a future PerformanceObserver implementation would
+  // be its own thing. (PR #8 review LOW: comment cleaned up.)
   function NoopObserver() {}
   NoopObserver.prototype.observe = function() {};
   NoopObserver.prototype.unobserve = function() {};

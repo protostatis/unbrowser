@@ -13,11 +13,29 @@ Three scenarios on one synthetic page:
 
 The whole page is gated on these callbacks firing during settle.
 """
-import http.server, json, socketserver, subprocess, threading
+import http.server, json, os, socketserver, subprocess, threading
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-BIN = REPO / "target" / "release" / "unbrowser"
+
+
+def _resolve_bin() -> Path:
+    """Find the unbrowser binary. Honors $UNBROWSER_BIN, then prefers
+    target/release, falls back to target/debug. Matches dev/CI flexibility
+    — running smoke from a debug build (e.g. after `cargo test --no-run`)
+    no longer requires a separate release build.
+    (PR #8 review minor.)
+    """
+    env = os.environ.get("UNBROWSER_BIN")
+    if env:
+        return Path(env)
+    rel = REPO / "target" / "release" / "unbrowser"
+    if rel.exists():
+        return rel
+    return REPO / "target" / "debug" / "unbrowser"
+
+
+BIN = _resolve_bin()
 
 HTML = """<!DOCTYPE html>
 <html><head><title>obs</title></head>
@@ -74,6 +92,17 @@ HTML = """<!DOCTYPE html>
   });
   mo.observe(document.body, { childList: true, subtree: true });
 
+  // 4. Tracker MO for the cross-navigate leak regression test.
+  // Counts ALL MutationObserver invocations into a window global so the
+  // test can read it after navigating to page B. If the observer
+  // correctly disconnects on __seedDOM, the count stays the same after
+  // page B's mutations.
+  window.__pageA_observer_count = 0;
+  var pageAMo = new MutationObserver(function(records) {
+    window.__pageA_observer_count += records.length;
+  });
+  pageAMo.observe(document.body, { childList: true, subtree: true });
+
   // Trigger a mutation that the observer should pick up
   setTimeout(function() {
     var div = document.createElement('div');
@@ -95,16 +124,21 @@ HTML = """<!DOCTYPE html>
 
 
 class H(http.server.BaseHTTPRequestHandler):
+    routes_extra = {}
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             b = HTML.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", str(len(b)))
-            self.end_headers()
-            self.wfile.write(b)
+        elif self.path in self.routes_extra:
+            b = self.routes_extra[self.path].encode()
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
     def log_message(self, *_): pass
 
 
@@ -138,6 +172,37 @@ def main():
         print(f"  {label:25s} {sel:18s} → {r!r}")
 
     final = call("text", selector="#results").get("result", "")
+
+    # PR #8 review HIGH regression test:
+    # Page-A's bootstrap already registered a MutationObserver during navigate's
+    # script-eval phase; that observer fired on the inline appendChild
+    # (recorded by the regular MO assertion above). Now read the global
+    # counter that Page A's HTML maintains.
+    page_a_count_before = call("eval", code="window.__pageA_observer_count || 0").get("result", 0)
+
+    # Navigate to a different page that triggers its own DOM mutation.
+    # If the page-A observer was correctly disconnected by __seedDOM, the
+    # counter stays unchanged. If not, page-A's observer fires on page-B's
+    # appendChild and the counter increases.
+    H.routes_extra = {
+        "/page_b.html": (
+            "<html><body><div id='b'>page-b</div>"
+            "<script>"
+            "  setTimeout(function(){"
+            "    document.body.appendChild(document.createElement('div'));"
+            "  }, 0);"
+            "</script>"
+            "</body></html>"
+        )
+    }
+    nav_b = call("navigate", url=f"{base}page_b.html", exec_scripts=True)
+    # Page-A's window globals (including __pageA_observer_count) survive
+    # navigate because the JS context isn't re-created. We're testing
+    # whether the OBSERVER references survive — they shouldn't.
+    page_a_count_after = call("eval", code="window.__pageA_observer_count || 0").get("result", 0)
+
+    print(f"\npage-A observer count: before nav-B={page_a_count_before} after nav-B={page_a_count_after}")
+
     call("close")
     p.communicate(timeout=2)
     httpd.shutdown()
@@ -161,6 +226,19 @@ def main():
         ok = False
     else:
         print("PASS: MutationObserver fired with childList record (target + addedNodes)")
+
+    # Page-A observer must NOT have run against page-B's mutations.
+    # Before fix: __activeMutationObservers persisted across __seedDOM, so
+    # page-A's _enqueue would fire on page-B's appendChild → counter > before.
+    # After fix: __resetActiveMutationObservers clears the list on __seedDOM
+    # → counter unchanged.
+    if page_a_count_after != page_a_count_before:
+        print(f"FAIL: page-A MutationObserver leaked into page-B "
+              f"(count went {page_a_count_before} → {page_a_count_after})")
+        ok = False
+    else:
+        print(f"PASS: page-A MutationObserver disconnected on navigate "
+              f"(count stayed at {page_a_count_before})")
 
     print()
     print("ALL PASS" if ok else "FAILURES")

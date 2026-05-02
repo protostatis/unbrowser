@@ -379,7 +379,16 @@
     if (idx === -1) throw new Error('Node not found');
     this.childNodes.splice(idx, 1);
     child.parentNode = null;
+    // Record + notify FIRST so MutationObserver records resolve the
+    // removed node via __nodeById before we drop it.
     recordMutation({ type: 'removeChild', parentId: this._id, childId: child._id });
+    // Drop from registry so detached subtrees don't accumulate over a
+    // long-running navigation. (PR #8 review medium.) Direct child only —
+    // descendants remain referenced by the detached parent until the next
+    // __seedDOM clears the whole registry. Acceptable trade for simplicity:
+    // observers still resolve the immediate removed node, and the bounded
+    // per-navigate cleanup means there's no cross-navigate leak.
+    delete __nodeRegistry[child._id];
     return child;
   };
 
@@ -1050,6 +1059,15 @@
 
   // --- Seed DOM from parsed JSON tree ---
   globalThis.__seedDOM = function(tree) {
+    // Disconnect any MutationObservers from the previous navigation. They
+    // were registered against page A's nodes and would otherwise fire on
+    // page B's mutations during this seed call (and beyond), running
+    // page A's callback against page B's data. (PR #8 review HIGH.)
+    // Hook is a no-op until shims.js installs it; safe to call before.
+    if (typeof globalThis.__resetActiveMutationObservers === 'function') {
+      try { globalThis.__resetActiveMutationObservers(); } catch (e) {}
+    }
+
     // Clear existing
     bodyEl.childNodes = [];
     headEl.childNodes = [];
