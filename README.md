@@ -31,11 +31,11 @@ unbrowser --mcp
 ```bash
 # macOS Apple Silicon
 curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-aarch64-apple-darwin.tar.gz | tar xz
-# macOS Intel
-curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-apple-darwin.tar.gz | tar xz
 # Linux x86_64 (glibc 2.35+)
 curl -L https://github.com/protostatis/unbrowser/releases/latest/download/unbrowser-x86_64-unknown-linux-gnu.tar.gz | tar xz
 ```
+
+**macOS Intel**: no prebuilt — `cargo install unbrowser` is the path. (GitHub's `macos-13` runner pool is being deprecated and CI allocations were exceeding an hour. We'll re-enable Intel Mac wheels via cross-compile from Apple Silicon in a future release.)
 
 **From source**:
 

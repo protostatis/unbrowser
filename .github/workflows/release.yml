@@ -30,12 +30,15 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14         # Apple Silicon runner
             wheel_platform: macosx_11_0_arm64
-          - target: x86_64-apple-darwin
-            os: macos-13         # Intel Mac runner
-            wheel_platform: macosx_10_12_x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04     # pin: glibc 2.35 == manylinux_2_35
             wheel_platform: manylinux_2_35_x86_64
+        # macOS x86_64 (Intel) is intentionally NOT in the matrix: GitHub's
+        # macos-13 runner pool is being deprecated, so allocations sometimes
+        # exceed an hour. Intel Mac users should `cargo install unbrowser`
+        # or build from source for now. We can re-add via cross-compile from
+        # macos-14 (arm64 → x86_64 with --target) in a follow-up if there's
+        # demand — Apple's clang supports the cross natively.
 
     steps:
       - uses: actions/checkout@v4
@@ -237,7 +240,7 @@ jobs:
             | Platform | Asset |
             |---|---|
             | macOS Apple Silicon | `unbrowser-aarch64-apple-darwin.tar.gz` |
-            | macOS Intel | `unbrowser-x86_64-apple-darwin.tar.gz` |
+            | macOS Intel | use `cargo install unbrowser` (no prebuilt binary in this release) |
             | Linux x86_64 (glibc) | `unbrowser-x86_64-unknown-linux-gnu.tar.gz` |
 
             ### One-liner (macOS / Linux):
