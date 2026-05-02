@@ -1,0 +1,6 @@
+# Collection runs are not committed — they're regenerable, large, and
+# may carry per-site captured content. Aggregated outputs from T2 (when
+# it lands) live in a separate `train/aggregates/` directory.
+runs/
+aggregates/
+*.bundle
