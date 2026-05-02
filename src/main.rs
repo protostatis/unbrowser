@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -312,7 +312,19 @@ struct Session {
     // events from that navigation (script_decision, policy_trace) carry
     // the same id so a driver can join outcomes against decisions.
     // See docs/probabilistic-policy.md §4.5 (outcome protocol).
+    //
+    // Ordering: Relaxed is correct today (single Session, single QuickJS
+    // runtime, current-thread tokio runtime — `navigate_with` cannot run
+    // concurrently with itself). If concurrency is ever introduced, the
+    // counter would still produce unique ids, but the *visibility* of
+    // associated emissions would need at least AcqRel.
     nav_counter: AtomicU64,
+    // Set of nav_ids that this Session has issued via next_nav_id() and
+    // that have at least reached the navigation_started emit point. Read
+    // by report_outcome to reject outcomes for unknown ids. Bounded by
+    // number of navigates per process — small in practice; if it ever
+    // matters we can switch to a ring buffer.
+    nav_ids_issued: Mutex<HashSet<String>>,
 }
 
 impl Session {
@@ -470,6 +482,7 @@ impl Session {
             last_body: None,
             policy_block,
             nav_counter: AtomicU64::new(0),
+            nav_ids_issued: Mutex::new(HashSet::new()),
         })
     }
 
@@ -480,7 +493,18 @@ impl Session {
     // with their own session id.
     fn next_nav_id(&self) -> String {
         let n = self.nav_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("nav_{n}")
+        let id = format!("nav_{n}");
+        if let Ok(mut set) = self.nav_ids_issued.lock() {
+            set.insert(id.clone());
+        }
+        id
+    }
+
+    fn nav_id_is_known(&self, id: &str) -> bool {
+        self.nav_ids_issued
+            .lock()
+            .map(|set| set.contains(id))
+            .unwrap_or(false)
     }
 
     // Set a wall-clock deadline (ms from now) that bounds every JS eval until
@@ -566,16 +590,11 @@ impl Session {
         let resp = req.send().await.context("http send")?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
-        emit_event(
-            "navigation_started",
-            json!({
-                "schema_version": 1,
-                "navigation_id": nav_id,
-                "url": final_url,
-                "exec_scripts": exec_scripts,
-                "policy_block": self.policy_block,
-            }),
-        );
+        // Defer navigation_started until DOM is seeded — pairing invariant:
+        // if navigation_started fires, policy_trace WILL fire before this
+        // function returns. Errors above this point (http send, body read,
+        // DOM seed) propagate without firing either event, so a driver
+        // never sees an orphan navigation_id. See review of PR #4 H2.
 
         // Snapshot useful response headers before consuming the response body.
         // Multi-value headers (Set-Cookie) are joined with ' || ' since they're
@@ -606,6 +625,23 @@ impl Session {
         let tree = parse_html_to_tree(&body);
         self.seed_dom(&tree)?;
 
+        // DOM is now committed for this nav_id. From here on, the function
+        // path always reaches the policy_trace emission (script branches
+        // both emit it; non-exec branch emits a minimal trace). Safe to
+        // announce navigation_started.
+        emit_event(
+            "navigation_started",
+            json!({
+                "schema_version": 1,
+                "navigation_id": nav_id,
+                "url": final_url,
+                "status": status,
+                "bytes": bytes,
+                "exec_scripts": exec_scripts,
+                "policy_block": self.policy_block,
+            }),
+        );
+
         // Update window.location for any page scripts that read it.
         let url_lit = serde_json::to_string(&final_url)?;
         let _ = self.eval(&format!("__setLocation({url_lit})"));
@@ -635,20 +671,23 @@ impl Session {
             const SCRIPT_FETCH_TIMEOUT_MS: u64 = 8000;
             let mut fetch_tasks: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
                 Vec::new();
+            // Authoritative record of which script ids were skipped at first
+            // pass. Replaces the previous "re-call policy::decide in assembly
+            // pass" approach (review M4) — fragile if policy_block toggles
+            // mid-navigate or if any non-deterministic structural prior
+            // enters policy::decide later. HashSet keeps the assembly pass
+            // O(1) per item.
+            let mut skipped_ids: HashSet<usize> = HashSet::new();
             for (idx, item) in items.iter().enumerate() {
                 if let ScriptItem::External { url: u, kind } = item {
-                    let host = url::Url::parse(u)
-                        .ok()
-                        .and_then(|p| p.host_str().map(|s| s.to_string()))
-                        .unwrap_or_default();
-                    let kind_str = match kind {
-                        ScriptKind::Sync => "sync",
-                        ScriptKind::Async => "async",
-                    };
+                    let host = host_of(u);
+                    let kind_str = script_kind_str(*kind);
                     if self.policy_block {
                         let d = policy::decide(u);
                         if d.blocked {
-                            // New canonical event — drivers should consume this.
+                            // Spec §6 schema: action enum is small (skip|run|
+                            // fetch_failed), reasons compose orthogonally.
+                            // Was previously action: "skip_blocklist".
                             emit_event(
                                 "script_decision",
                                 json!({
@@ -658,7 +697,8 @@ impl Session {
                                     "url": u,
                                     "host": host,
                                     "kind": kind_str,
-                                    "action": "skip_blocklist",
+                                    "action": "skip",
+                                    "reason": "blocklist",
                                     "category": d.category.map(|c| c.as_str()),
                                     "matched": d.matched_pattern,
                                 }),
@@ -676,6 +716,7 @@ impl Session {
                                 }),
                             );
                             policy_blocked_count += 1;
+                            skipped_ids.insert(idx);
                             continue;
                         }
                     }
@@ -739,34 +780,36 @@ impl Session {
             //                   Sync — we have no incremental parsing, so
             //                   "execute after parse in document order"
             //                   collapses to "execute now in document order."
-            let mut sync_sources: Vec<String> = Vec::new();
-            let mut async_sources: Vec<String> = Vec::new();
+            // Each entry pairs (script_id, kind_str, optional url, body) so
+            // the eval loop below can emit a script_executed event per
+            // source with the correct script_id and url for credit
+            // assignment by future Bayesian phases.
+            let mut sync_sources: Vec<(usize, &'static str, Option<String>, String)> = Vec::new();
+            let mut async_sources: Vec<(usize, &'static str, Option<String>, String)> = Vec::new();
             let mut fetch_failed_count = 0usize;
             for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     ScriptItem::Inline(s) => {
                         inline_count += 1;
-                        sync_sources.push(s);
+                        // No script_decision for inline (v0 emits decisions
+                        // for external only — inline scripts always run).
+                        sync_sources.push((idx, "inline", None, s));
                     }
                     ScriptItem::External { url, kind } => {
-                        // Re-check policy idempotently to know if this idx was
-                        // skipped at first-pass time. Cheaper than threading a
-                        // HashSet through; policy::decide is constant-time on
-                        // the hot path.
-                        let was_skipped = self.policy_block && policy::decide(&url).blocked;
-                        if was_skipped {
-                            // Already emitted script_decision(skip_blocklist) above.
+                        if skipped_ids.contains(&idx) {
+                            // Already emitted script_decision(skip) at first pass.
                             continue;
                         }
-                        let host = url::Url::parse(&url)
-                            .ok()
-                            .and_then(|p| p.host_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        let kind_str = match kind {
-                            ScriptKind::Sync => "sync",
-                            ScriptKind::Async => "async",
-                        };
+                        let host = host_of(&url);
+                        let kind_str = script_kind_str(kind);
                         if let Some(body) = external_results.remove(&idx) {
+                            // Spec §6: action enum is run|skip|fetch_failed.
+                            // We use "queued" here because eval has not yet
+                            // happened — the actual execution outcome is
+                            // reported separately via script_executed below.
+                            // Drivers wanting "ran successfully" should join
+                            // script_decision{action: queued} with
+                            // script_executed{error: null}.
                             emit_event(
                                 "script_decision",
                                 json!({
@@ -776,14 +819,16 @@ impl Session {
                                     "url": url,
                                     "host": host,
                                     "kind": kind_str,
-                                    "action": "run",
+                                    "action": "queued",
                                 }),
                             );
                             match kind {
-                                ScriptKind::Sync => sync_sources.push(body),
+                                ScriptKind::Sync => {
+                                    sync_sources.push((idx, kind_str, Some(url), body));
+                                }
                                 ScriptKind::Async => {
                                     async_count += 1;
-                                    async_sources.push(body);
+                                    async_sources.push((idx, kind_str, Some(url), body));
                                 }
                             }
                         } else {
@@ -804,7 +849,8 @@ impl Session {
                     }
                 }
             }
-            let sources: Vec<String> = sync_sources.into_iter().chain(async_sources).collect();
+            let sources: Vec<(usize, &'static str, Option<String>, String)> =
+                sync_sources.into_iter().chain(async_sources).collect();
             // Eval all in document order. Page scripts often end with an
             // Element-returning expression (circular refs → JSON.stringify
             // throws), so use eval_void.
@@ -822,20 +868,55 @@ impl Session {
             let mut eval_errors: Vec<String> = Vec::new();
             let mut executed: usize = 0;
             let mut interrupted: usize = 0;
-            for source in &sources {
-                if let Err(e) = self.eval_void(source) {
-                    let msg = e.to_string();
-                    let is_interrupt = msg.contains("interrupted");
-                    if is_interrupt {
-                        interrupted += 1;
+            for (script_id, kind_str, url, source) in &sources {
+                let eval_start = std::time::Instant::now();
+                let result = self.eval_void(source);
+                let duration_us = eval_start.elapsed().as_micros() as u64;
+                match result {
+                    Err(e) => {
+                        let msg = e.to_string();
+                        let is_interrupt = msg.contains("interrupted");
+                        if is_interrupt {
+                            interrupted += 1;
+                        }
+                        let truncated = if msg.len() > 200 {
+                            format!("{}…", &msg[..200])
+                        } else {
+                            msg.clone()
+                        };
+                        eval_errors.push(truncated.clone());
+                        // Spec §6: script_executed reports actual runtime
+                        // outcome, distinct from script_decision (queued).
+                        emit_event(
+                            "script_executed",
+                            json!({
+                                "schema_version": 1,
+                                "navigation_id": nav_id,
+                                "script_id": script_id,
+                                "url": url,
+                                "kind": kind_str,
+                                "duration_us": duration_us,
+                                "error": truncated,
+                                "interrupted": is_interrupt,
+                            }),
+                        );
                     }
-                    if msg.len() > 200 {
-                        eval_errors.push(format!("{}…", &msg[..200]));
-                    } else {
-                        eval_errors.push(msg);
+                    Ok(()) => {
+                        executed += 1;
+                        emit_event(
+                            "script_executed",
+                            json!({
+                                "schema_version": 1,
+                                "navigation_id": nav_id,
+                                "script_id": script_id,
+                                "url": url,
+                                "kind": kind_str,
+                                "duration_us": duration_us,
+                                "error": Value::Null,
+                                "interrupted": false,
+                            }),
+                        );
                     }
-                } else {
-                    executed += 1;
                 }
             }
 
@@ -915,6 +996,27 @@ impl Session {
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
 
+        // Auto-extract on SPA-shell pages. When the blockmap density says the
+        // DOM looks like an unhydrated shell (likely_js_filled=true) AND there
+        // are JSON-bearing <script> tags to pull from (json_scripts>0), run
+        // __extract() inline so the agent gets embedded data (__NEXT_DATA__,
+        // JSON-LD, json_in_script, etc.) in one round trip instead of two.
+        // Healthy pages skip the call and pay zero extra cost. The agent can
+        // still call extract() explicitly to override or pick a strategy.
+        let density = blockmap.get("density");
+        let likely_js_filled = density
+            .and_then(|d| d.get("likely_js_filled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let json_scripts = density
+            .and_then(|d| d.get("json_scripts"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let auto_extract = if likely_js_filled && json_scripts > 0 {
+            self.extract(None).ok()
+        } else {
+            None
+        };
 
         emit_event(
             "navigate",
@@ -926,6 +1028,8 @@ impl Session {
                 "exec_scripts": exec_scripts,
                 "scripts_executed": scripts.as_ref().and_then(|s| s.get("executed")),
                 "scripts_interrupted": scripts.as_ref().and_then(|s| s.get("interrupted")),
+                "auto_extract_strategy": auto_extract.as_ref().and_then(|e| e.get("strategy")),
+                "auto_extract_confidence": auto_extract.as_ref().and_then(|e| e.get("confidence")),
             }),
         );
 
@@ -938,6 +1042,7 @@ impl Session {
             "blockmap": blockmap,
             "challenge": challenge,
             "scripts": scripts,
+            "extract": auto_extract,
         }))
     }
 
@@ -1808,18 +1913,68 @@ fn emit_event(name: &str, fields: Value) {
     eprintln!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
 
-// Phase A: shared between rpc_main and dispatch_tool. Emits the
-// `outcome_reported` NDJSON event from a report_outcome RPC call. v0 just
-// records the outcome — no posterior updates yet (see
-// docs/probabilistic-policy.md §4.5 for the protocol). Drivers should
-// pass the navigation_id returned by navigate.
-fn emit_outcome(params: &Value, nav_id: &str) {
+// Lowercased host extracted from a URL; "" on parse failure or hostless.
+// Used by script_decision events. Centralized so the event shape stays
+// consistent across the first-pass and assembly-pass emissions.
+fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_lowercase()))
+        .unwrap_or_default()
+}
+
+fn script_kind_str(kind: ScriptKind) -> &'static str {
+    match kind {
+        ScriptKind::Sync => "sync",
+        ScriptKind::Async => "async",
+    }
+}
+
+// Phase A: validated outcome reporting. Shared between rpc_main and
+// dispatch_tool so the validation and event shape stay canonical. v0
+// just emits the NDJSON event — no posterior updates yet (see
+// docs/probabilistic-policy.md §4.5).
+//
+// Returns Err with a human-readable message on schema violations.
+// Unknown nav_id is rejected so an outcome can never silently corrupt
+// future posterior attribution.
+const TASK_CLASS_ENUM: &[&str] = &["extract", "query", "click", "form", "visual"];
+
+fn validate_and_emit_outcome(
+    session: &Session,
+    params: &Value,
+    nav_id: &str,
+) -> std::result::Result<(), String> {
+    if nav_id.is_empty() {
+        return Err("missing 'navigation_id' param".to_string());
+    }
+    if !session.nav_id_is_known(nav_id) {
+        return Err(format!(
+            "unknown navigation_id '{nav_id}' — never issued by this session"
+        ));
+    }
+    // success is required by the schema. Missing → reject (don't default to false).
+    let success = match params.get("success") {
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| "'success' must be boolean".to_string())?,
+        None => return Err("missing required 'success' param".to_string()),
+    };
+    let task_class = match params.get("task_class") {
+        Some(Value::Null) | None => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| "'task_class' must be string".to_string())?;
+            if !TASK_CLASS_ENUM.contains(&s) {
+                return Err(format!(
+                    "'task_class' must be one of {TASK_CLASS_ENUM:?}, got '{s}'"
+                ));
+            }
+            Some(s)
+        }
+    };
     let task_id = params.get("task_id").and_then(|v| v.as_str());
-    let task_class = params.get("task_class").and_then(|v| v.as_str());
-    let success = params
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let quality = params.get("quality").and_then(|v| v.as_f64());
     let error = params.get("error").and_then(|v| v.as_str());
     emit_event(
@@ -1834,6 +1989,7 @@ fn emit_outcome(params: &Value, nav_id: &str) {
             "error": error,
         }),
     );
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -2155,11 +2311,9 @@ async fn rpc_main(profile: Profile) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if nav_id.is_empty() {
-                    err_response(id, -32602, "missing 'navigation_id' param")
-                } else {
-                    emit_outcome(&req.params, &nav_id);
-                    ok_response(id, json!({ "ok": true }))
+                match validate_and_emit_outcome(&session, &req.params, &nav_id) {
+                    Ok(()) => ok_response(id, json!({ "ok": true })),
+                    Err(msg) => err_response(id, -32602, msg),
                 }
             }
             "close" => {
@@ -2455,7 +2609,7 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
         "report_outcome" => {
             let nav_id =
                 str_arg("navigation_id").ok_or_else(|| anyhow!("missing 'navigation_id'"))?;
-            emit_outcome(args, nav_id);
+            validate_and_emit_outcome(session, args, nav_id).map_err(|e| anyhow!(e))?;
             Ok(json!({ "ok": true }))
         }
         _ => Err(anyhow!("unknown tool: {name}")),
