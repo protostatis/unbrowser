@@ -701,18 +701,56 @@ impl Session {
         // was empirically inert: shell-shaped pages and JSON-bearing pages are
         // anti-correlated in the wild — if a site is a thin shell it usually
         // fetches data later via XHR; if it embeds JSON it usually rendered
-        // enough HTML to not look like a shell. __extract() is a sync QuickJS
-        // eval over the already-parsed DOM (no network, no re-parse), so the
-        // overhead on pages where extract just returns og_meta is negligible.
+        // enough HTML to not look like a shell.
+        //
+        // Cost: __extract() is a sync QuickJS eval over the already-parsed
+        // DOM (no network, no re-parse). On pages with only meta tags this is
+        // sub-ms. On JSON-heavy pages a JSON.parse pass + the FFI roundtrip
+        // back through serde_json runs ~20–150ms — bounded by the inline-size
+        // cap below so a runaway result can't bloat the navigate response.
+        //
+        // Inline cap rationale: navigate's response is one JSON-RPC line on
+        // stdout. Multi-MB lines choke MCP hosts and naïve readline
+        // consumers. 256 KB comfortably fits a large __NEXT_DATA__ (Zillow
+        // ~160 KB) but caps pathological Magento PLPs (sometimes 500 KB+ of
+        // init blobs). On overflow we return a stub carrying strategy /
+        // confidence / size so the agent knows what's there and can call
+        // extract() explicitly to retrieve the full payload.
+        const MAX_INLINE_EXTRACT_BYTES: usize = 256 * 1024;
+
         let json_scripts = blockmap
             .get("density")
             .and_then(|d| d.get("json_scripts"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let auto_extract = if json_scripts > 0 {
-            self.extract(None).ok()
+        let (auto_extract, auto_extract_error) = if json_scripts > 0 {
+            match self.extract(None) {
+                Ok(v) => {
+                    let size = serde_json::to_string(&v).map(|s| s.len()).unwrap_or(0);
+                    if size > MAX_INLINE_EXTRACT_BYTES {
+                        let strategy = v.get("strategy").cloned().unwrap_or(Value::Null);
+                        let confidence = v.get("confidence").cloned().unwrap_or(Value::Null);
+                        (
+                            Some(json!({
+                                "strategy": strategy,
+                                "confidence": confidence,
+                                "data": null,
+                                "truncated": true,
+                                "size_bytes": size,
+                                "hint": format!(
+                                    "extract result {size} bytes exceeds {MAX_INLINE_EXTRACT_BYTES} byte inline cap; call extract() to retrieve full data"
+                                ),
+                            })),
+                            None,
+                        )
+                    } else {
+                        (Some(v), None)
+                    }
+                }
+                Err(e) => (None, Some(e.to_string())),
+            }
         } else {
-            None
+            (None, None)
         };
 
         emit_event(
@@ -727,6 +765,8 @@ impl Session {
                 "scripts_interrupted": scripts.as_ref().and_then(|s| s.get("interrupted")),
                 "auto_extract_strategy": auto_extract.as_ref().and_then(|e| e.get("strategy")),
                 "auto_extract_confidence": auto_extract.as_ref().and_then(|e| e.get("confidence")),
+                "auto_extract_truncated": auto_extract.as_ref().and_then(|e| e.get("truncated")),
+                "auto_extract_error": auto_extract_error,
             }),
         );
 
