@@ -1098,24 +1098,24 @@ impl Session {
                             } else {
                                 (true, None)
                             };
-                            if let Some(out) = outcome {
-                                if let (Some(post), Some(s)) = (out.posterior, out.sampled) {
-                                    emit_event(
-                                        "posterior_consulted",
-                                        json!({
-                                            "schema_version": 1,
-                                            "navigation_id": nav_id,
-                                            "decision_key": decision_key,
-                                            "domain": p.domain,
-                                            "alpha": post.alpha,
-                                            "beta": post.beta,
-                                            "n": post.n,
-                                            "sampled": s,
-                                            "threshold": THRESHOLD,
-                                            "blocked": block_now,
-                                        }),
-                                    );
-                                }
+                            if let Some(out) = outcome
+                                && let (Some(post), Some(s)) = (out.posterior, out.sampled)
+                            {
+                                emit_event(
+                                    "posterior_consulted",
+                                    json!({
+                                        "schema_version": 1,
+                                        "navigation_id": nav_id,
+                                        "decision_key": decision_key,
+                                        "domain": p.domain,
+                                        "alpha": post.alpha,
+                                        "beta": post.beta,
+                                        "n": post.n,
+                                        "sampled": s,
+                                        "threshold": THRESHOLD,
+                                        "blocked": block_now,
+                                    }),
+                                );
                             }
                             if block_now {
                                 let mut decision = json!({
