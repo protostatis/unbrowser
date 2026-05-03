@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 # (cf. python-dateutil → `from dateutil import ...`); the import name and
 # binary stay `unbrowser` everywhere else.
 name = "pyunbrowser"
-version = "0.0.6"
+version = "0.0.7"
 description = "Web access for LLM agents. One static binary. No Chrome."
 readme = "README.md"
 license = { text = "Apache-2.0" }
