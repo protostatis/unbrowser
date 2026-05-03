@@ -1,0 +1,620 @@
+[
+  {
+    "url": "https://news.ycombinator.com/",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "Reference static SSR baseline; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://news.ycombinator.com/newest",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "HN newest queue — same template, different feed; sanity-checks per-path stability."
+  },
+  {
+    "url": "https://lobste.rs/",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "Rails monolith, fully SSR; minimal JS, classic landmark structure."
+  },
+  {
+    "url": "https://www.bbc.com/news",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "Heavy SSR with progressive enhancement; lots of links and structured headlines."
+  },
+  {
+    "url": "https://www.reuters.com/",
+    "category": "static_news",
+    "expected_framework": "react-18",
+    "notes": "Mostly SSR; previously had a full React rewrite, now mixed."
+  },
+  {
+    "url": "https://www.npr.org/",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "Public radio site; classic CMS-rendered, minimal client framework."
+  },
+  {
+    "url": "https://text.npr.org/",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "NPR text-only mirror — pure HTML, ideal happy-path baseline."
+  },
+  {
+    "url": "https://www.aljazeera.com/news/",
+    "category": "static_news",
+    "expected_framework": "next-14",
+    "notes": "International news outlet using Next.js but largely SSR."
+  },
+  {
+    "url": "https://www.theguardian.com/international",
+    "category": "static_news",
+    "expected_framework": "static_ssr",
+    "notes": "Custom Scala stack, fully SSR with article content inline."
+  },
+  {
+    "url": "https://apnews.com/",
+    "category": "static_news",
+    "expected_framework": "next-14",
+    "notes": "AP News on Next.js; mostly SSR cards in landmarks."
+  },
+  {
+    "url": "https://www.cnbc.com/markets/",
+    "category": "news_media",
+    "expected_framework": null,
+    "notes": "Classic SSR-shell + JS-filled cells (the density: likely_js_filled trap)."
+  },
+  {
+    "url": "https://www.theverge.com/",
+    "category": "news_media",
+    "expected_framework": "next-14",
+    "notes": "Vox Media/Concert; heavy on third-party scripts — a blocklist exemplar."
+  },
+  {
+    "url": "https://www.engadget.com/",
+    "category": "news_media",
+    "expected_framework": null,
+    "notes": "Yahoo-stack media; many tracker domains, good for blocklist hit-rate."
+  },
+  {
+    "url": "https://www.theatlantic.com/",
+    "category": "news_media",
+    "expected_framework": "react-18",
+    "notes": "React-based long-form; tests text density and reader-mode-style content."
+  },
+  {
+    "url": "https://www.wired.com/",
+    "category": "news_media",
+    "expected_framework": "react-18",
+    "notes": "Conde Nast custom stack; rich card grid + paywall hint."
+  },
+  {
+    "url": "https://www.economist.com/",
+    "category": "news_media",
+    "expected_framework": null,
+    "notes": "Mostly SSR with paywall and analytics layers."
+  },
+  {
+    "url": "https://techcrunch.com/",
+    "category": "news_media",
+    "expected_framework": "static_ssr",
+    "notes": "WordPress-backed; lots of article cards in main landmark."
+  },
+  {
+    "url": "https://www.theregister.com/",
+    "category": "news_media",
+    "expected_framework": "static_ssr",
+    "notes": "Old-school SSR tech news; minimal JS."
+  },
+  {
+    "url": "https://arstechnica.com/",
+    "category": "news_media",
+    "expected_framework": "static_ssr",
+    "notes": "Conde-tech; mixed SSR + lazy-loaded comments."
+  },
+  {
+    "url": "https://hackaday.com/",
+    "category": "news_media",
+    "expected_framework": "static_ssr",
+    "notes": "WordPress-based maker news; SSR baseline."
+  },
+  {
+    "url": "https://slashdot.org/",
+    "category": "news_media",
+    "expected_framework": "static_ssr",
+    "notes": "Classic SSR community news; good comparison vs HN."
+  },
+  {
+    "url": "https://polymarket.com/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "Card-grid prediction market; SSR shell + JS-filled cells."
+  },
+  {
+    "url": "https://kalshi.com/markets",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "Regulated event-contract market; React/Next SPA."
+  },
+  {
+    "url": "https://manifold.markets/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "Play-money prediction market on Next.js; rich CSR card grid."
+  },
+  {
+    "url": "https://opensea.io/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "NFT marketplace; tests heavy-image lazy-load + JS-rendered cards."
+  },
+  {
+    "url": "https://magiceden.io/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "Multi-chain NFT marketplace; Next.js SPA."
+  },
+  {
+    "url": "https://www.airbnb.com/s/homes",
+    "category": "marketplace_spa",
+    "expected_framework": "react-18",
+    "notes": "Search-results listings; deeply CSR with React server components."
+  },
+  {
+    "url": "https://itch.io/games",
+    "category": "marketplace_spa",
+    "expected_framework": "static_ssr",
+    "notes": "Indie games marketplace; Lua/SSR baseline with infinite scroll JS."
+  },
+  {
+    "url": "https://gumroad.com/discover",
+    "category": "marketplace_spa",
+    "expected_framework": "react-18",
+    "notes": "Creator marketplace; React frontend, SSR shell."
+  },
+  {
+    "url": "https://www.producthunt.com/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "Daily-launch board; Next.js with client-side card rendering."
+  },
+  {
+    "url": "https://defillama.com/",
+    "category": "marketplace_spa",
+    "expected_framework": "next-14",
+    "notes": "DeFi TVL dashboard; tables filled by client-side data fetch."
+  },
+  {
+    "url": "https://dexscreener.com/",
+    "category": "marketplace_spa",
+    "expected_framework": "react-18",
+    "notes": "Token explorer; CSR card grid with frequent socket-pushed updates."
+  },
+  {
+    "url": "https://www.npmjs.com/package/react",
+    "category": "ecommerce",
+    "expected_framework": "next-14",
+    "notes": "Package landing; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://www.npmjs.com/package/typescript",
+    "category": "ecommerce",
+    "expected_framework": "next-14",
+    "notes": "Package landing duplicate-template variant for stability cross-check."
+  },
+  {
+    "url": "https://crates.io/crates/serde",
+    "category": "ecommerce",
+    "expected_framework": "react-18",
+    "notes": "Rust crate listing; Ember-then-React SPA with API-fetched data."
+  },
+  {
+    "url": "https://pypi.org/project/requests/",
+    "category": "ecommerce",
+    "expected_framework": "static_ssr",
+    "notes": "Python Package Index project page; pure SSR."
+  },
+  {
+    "url": "https://www.ebay.com/sch/i.html?_nkw=mechanical+keyboard",
+    "category": "ecommerce",
+    "expected_framework": "static_ssr",
+    "notes": "eBay search results; SSR with lots of result cards."
+  },
+  {
+    "url": "https://www.etsy.com/search?q=enamel+pin",
+    "category": "ecommerce",
+    "expected_framework": "react-18",
+    "notes": "Etsy listing search; React SPA over SSR shell."
+  },
+  {
+    "url": "https://shop.tesla.com/",
+    "category": "ecommerce",
+    "expected_framework": "react-18",
+    "notes": "Tesla parts/accessories storefront; React SPA."
+  },
+  {
+    "url": "https://www.allbirds.com/collections/mens",
+    "category": "ecommerce",
+    "expected_framework": null,
+    "notes": "Shopify storefront example; classic e-commerce template."
+  },
+  {
+    "url": "https://shop.snapchat.com/",
+    "category": "ecommerce",
+    "expected_framework": "react-18",
+    "notes": "DTC merch storefront; React SPA."
+  },
+  {
+    "url": "https://www.hugobossoutlet.com/en/sale/",
+    "category": "ecommerce",
+    "expected_framework": null,
+    "notes": "Outlet category page; tests filtering/faceted nav SSR."
+  },
+  {
+    "url": "https://github.com/anthropics/anthropic-sdk-python",
+    "category": "developer_tools",
+    "expected_framework": "react-18",
+    "notes": "GitHub repo page; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://github.com/trending",
+    "category": "developer_tools",
+    "expected_framework": "react-18",
+    "notes": "Trending repos list; SSR with infinite scroll on tabs."
+  },
+  {
+    "url": "https://gitlab.com/explore/projects",
+    "category": "developer_tools",
+    "expected_framework": "vue-3",
+    "notes": "GitLab Vue 3 SPA over Rails SSR; project explorer."
+  },
+  {
+    "url": "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array",
+    "category": "developer_tools",
+    "expected_framework": "static_ssr",
+    "notes": "Q&A page; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://stackoverflow.com/questions",
+    "category": "developer_tools",
+    "expected_framework": "static_ssr",
+    "notes": "SO question feed; SSR baseline with comments hidden by default."
+  },
+  {
+    "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+    "category": "developer_tools",
+    "expected_framework": "react-18",
+    "notes": "MDN documentation root; React-driven static export."
+  },
+  {
+    "url": "https://crates.io/",
+    "category": "developer_tools",
+    "expected_framework": "react-18",
+    "notes": "Crates.io home; React SPA with API calls."
+  },
+  {
+    "url": "https://pkg.go.dev/std",
+    "category": "developer_tools",
+    "expected_framework": "static_ssr",
+    "notes": "Go pkg index; pure SSR docs site."
+  },
+  {
+    "url": "https://hub.docker.com/search?q=alpine",
+    "category": "developer_tools",
+    "expected_framework": "react-18",
+    "notes": "Docker Hub search; React SPA over SSR shell."
+  },
+  {
+    "url": "https://godbolt.org/",
+    "category": "developer_tools",
+    "expected_framework": null,
+    "notes": "Compiler Explorer landing; mostly static, SPA on inner pages."
+  },
+  {
+    "url": "https://news.ycombinator.com/show",
+    "category": "developer_tools",
+    "expected_framework": "static_ssr",
+    "notes": "HN Show page; same template, different content slice."
+  },
+  {
+    "url": "https://www.reddit.com/r/programming/",
+    "category": "social_csr",
+    "expected_framework": "web_components",
+    "notes": "Web-components subreddit; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://www.reddit.com/r/rust/",
+    "category": "social_csr",
+    "expected_framework": "web_components",
+    "notes": "Different subreddit, same shadow-DOM template."
+  },
+  {
+    "url": "https://old.reddit.com/r/programming/",
+    "category": "social_csr",
+    "expected_framework": "static_ssr",
+    "notes": "Old Reddit; pure SSR baseline vs new Reddit web-components."
+  },
+  {
+    "url": "https://bsky.app/",
+    "category": "social_csr",
+    "expected_framework": "react-18",
+    "notes": "Bluesky web client; React Native Web — heavy CSR."
+  },
+  {
+    "url": "https://mastodon.social/explore",
+    "category": "social_csr",
+    "expected_framework": "react-18",
+    "notes": "Mastodon flagship instance; React SPA explore feed."
+  },
+  {
+    "url": "https://lemmy.world/",
+    "category": "social_csr",
+    "expected_framework": null,
+    "notes": "Lemmy fediverse; Inferno SSR + hydration."
+  },
+  {
+    "url": "https://news.ycombinator.com/ask",
+    "category": "social_csr",
+    "expected_framework": "static_ssr",
+    "notes": "HN Ask page; included to round out social_csr w/ a discussion-board comparator."
+  },
+  {
+    "url": "https://lobste.rs/active",
+    "category": "social_csr",
+    "expected_framework": "static_ssr",
+    "notes": "Lobsters active threads; SSR comments tree."
+  },
+  {
+    "url": "https://substack.com/discover",
+    "category": "social_csr",
+    "expected_framework": "react-18",
+    "notes": "Newsletter discover feed; React SPA recommendations."
+  },
+  {
+    "url": "https://news.ycombinator.com/jobs",
+    "category": "social_csr",
+    "expected_framework": "static_ssr",
+    "notes": "HN jobs queue; SSR list, included to round social_csr to 10."
+  },
+  {
+    "url": "https://tailwindcss.com/docs",
+    "category": "documentation",
+    "expected_framework": "next-14",
+    "notes": "Tailwind docs; Next.js with MDX, lots of code blocks."
+  },
+  {
+    "url": "https://nextjs.org/docs",
+    "category": "documentation",
+    "expected_framework": "next-15",
+    "notes": "Next.js docs; canonical Next.js 15 reference site."
+  },
+  {
+    "url": "https://react.dev/learn",
+    "category": "documentation",
+    "expected_framework": "react-19",
+    "notes": "React docs on react.dev; React 19 Server Components reference."
+  },
+  {
+    "url": "https://vercel.com/docs",
+    "category": "documentation",
+    "expected_framework": "next-15",
+    "notes": "Vercel docs; Next.js App Router docs site."
+  },
+  {
+    "url": "https://vuejs.org/guide/introduction.html",
+    "category": "documentation",
+    "expected_framework": "vue-3",
+    "notes": "Vue 3 docs; VitePress static site."
+  },
+  {
+    "url": "https://svelte.dev/docs",
+    "category": "documentation",
+    "expected_framework": "svelte-5",
+    "notes": "Svelte docs; SvelteKit static export."
+  },
+  {
+    "url": "https://docs.astro.build/en/getting-started/",
+    "category": "documentation",
+    "expected_framework": "astro",
+    "notes": "Astro docs; canonical Astro reference."
+  },
+  {
+    "url": "https://nuxt.com/docs/getting-started/introduction",
+    "category": "documentation",
+    "expected_framework": "nuxt-3",
+    "notes": "Nuxt 3 docs; Nuxt content site."
+  },
+  {
+    "url": "https://docs.python.org/3/",
+    "category": "documentation",
+    "expected_framework": "static_ssr",
+    "notes": "Python docs; classic Sphinx static HTML."
+  },
+  {
+    "url": "https://doc.rust-lang.org/book/",
+    "category": "documentation",
+    "expected_framework": "static_ssr",
+    "notes": "Rust book; mdBook static site."
+  },
+  {
+    "url": "https://www.youtube.com/feed/trending",
+    "category": "media_streaming",
+    "expected_framework": null,
+    "notes": "YouTube trending feed; verified in _before_after_compare matrix."
+  },
+  {
+    "url": "https://www.youtube.com/",
+    "category": "media_streaming",
+    "expected_framework": null,
+    "notes": "YouTube home; data-store SPA pattern (ytInitialData)."
+  },
+  {
+    "url": "https://www.twitch.tv/directory",
+    "category": "media_streaming",
+    "expected_framework": "react-18",
+    "notes": "Twitch directory; React SPA with heavy GraphQL prefetch."
+  },
+  {
+    "url": "https://www.twitch.tv/directory/category/just-chatting",
+    "category": "media_streaming",
+    "expected_framework": "react-18",
+    "notes": "Twitch category drill-down; React SPA card grid."
+  },
+  {
+    "url": "https://open.spotify.com/genre/0JQ5DAqbMKFEC4WFtoNRpw",
+    "category": "media_streaming",
+    "expected_framework": "react-18",
+    "notes": "Spotify Pop genre; React SPA with auth-gated cards."
+  },
+  {
+    "url": "https://soundcloud.com/discover",
+    "category": "media_streaming",
+    "expected_framework": "react-18",
+    "notes": "SoundCloud discover feed; React SPA."
+  },
+  {
+    "url": "https://music.apple.com/us/browse",
+    "category": "media_streaming",
+    "expected_framework": null,
+    "notes": "Apple Music browse; React/Ember-based SPA."
+  },
+  {
+    "url": "https://www.bandcamp.com/discover/electronic",
+    "category": "media_streaming",
+    "expected_framework": "static_ssr",
+    "notes": "Bandcamp electronic discover; SSR with progressive JS."
+  },
+  {
+    "url": "https://www.last.fm/charts",
+    "category": "media_streaming",
+    "expected_framework": "static_ssr",
+    "notes": "Last.fm charts; pure SSR table baseline."
+  },
+  {
+    "url": "https://www.imdb.com/chart/top/",
+    "category": "media_streaming",
+    "expected_framework": "react-18",
+    "notes": "IMDb top 250 chart; React SPA with SSR shell."
+  },
+  {
+    "url": "https://www.notion.so/templates",
+    "category": "consumer_apps",
+    "expected_framework": "next-14",
+    "notes": "Notion templates gallery; Next.js card grid."
+  },
+  {
+    "url": "https://linear.app/",
+    "category": "consumer_apps",
+    "expected_framework": "next-15",
+    "notes": "Linear marketing landing; Next.js."
+  },
+  {
+    "url": "https://discordstatus.com/",
+    "category": "consumer_apps",
+    "expected_framework": "static_ssr",
+    "notes": "Statuspage.io status board; minimal JS, classic landmarks."
+  },
+  {
+    "url": "https://www.cloudflarestatus.com/",
+    "category": "consumer_apps",
+    "expected_framework": "static_ssr",
+    "notes": "Cloudflare status; Statuspage SSR."
+  },
+  {
+    "url": "https://blog.cloudflare.com/",
+    "category": "consumer_apps",
+    "expected_framework": "next-14",
+    "notes": "Cloudflare blog index; Next.js with article cards."
+  },
+  {
+    "url": "https://stripe.com/customers",
+    "category": "consumer_apps",
+    "expected_framework": "next-14",
+    "notes": "Stripe customer stories; Next.js marketing site."
+  },
+  {
+    "url": "https://www.figma.com/community",
+    "category": "consumer_apps",
+    "expected_framework": "react-18",
+    "notes": "Figma community; React SPA."
+  },
+  {
+    "url": "https://huggingface.co/models",
+    "category": "consumer_apps",
+    "expected_framework": "svelte-5",
+    "notes": "HF model hub; SvelteKit SPA."
+  },
+  {
+    "url": "https://replicate.com/explore",
+    "category": "consumer_apps",
+    "expected_framework": "next-14",
+    "notes": "Replicate model explore; Next.js."
+  },
+  {
+    "url": "https://anthropic.com/news",
+    "category": "consumer_apps",
+    "expected_framework": "next-14",
+    "notes": "Anthropic news index; Next.js marketing."
+  },
+  {
+    "url": "https://www.census.gov/topics/population.html",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "US Census topic page; pure SSR government site."
+  },
+  {
+    "url": "https://www.usa.gov/",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "USA.gov landing; classic Drupal/static SSR."
+  },
+  {
+    "url": "https://www.usajobs.gov/Search/Results?l=&k=engineer",
+    "category": "government_static",
+    "expected_framework": null,
+    "notes": "USAJobs search results; backend-rendered with some JS sort."
+  },
+  {
+    "url": "https://www.nih.gov/news-events/news-releases",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "NIH news releases index; Drupal SSR."
+  },
+  {
+    "url": "https://www.fda.gov/news-events/press-announcements",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "FDA press; classic government SSR."
+  },
+  {
+    "url": "https://www.bls.gov/news.release/",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "Bureau of Labor Statistics releases index; pure HTML."
+  },
+  {
+    "url": "https://www.federalreserve.gov/newsevents.htm",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "Federal Reserve news; classic SSR."
+  },
+  {
+    "url": "https://www.whitehouse.gov/news/",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "WH news index; WordPress-backed SSR."
+  },
+  {
+    "url": "https://www.congress.gov/",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "Congress.gov landing; Drupal SSR with bill search forms."
+  },
+  {
+    "url": "https://www.supremecourt.gov/",
+    "category": "government_static",
+    "expected_framework": "static_ssr",
+    "notes": "SCOTUS landing; old-school SSR baseline."
+  }
+]
