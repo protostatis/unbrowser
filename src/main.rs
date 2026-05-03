@@ -971,7 +971,23 @@ impl Session {
             let mut interrupted: usize = 0;
             for (script_id, kind_str, url, source) in &sources {
                 let eval_start = std::time::Instant::now();
-                let result = self.eval_void(source);
+                // ES module routing: if the source looks like a module
+                // (contains `import` or `export` statements at line start),
+                // hand it to JS-side __loadModule which recursively loads
+                // dependencies before evaluating the cleaned body. Returns
+                // a Promise; settle drives it to completion. (Static
+                // counterpart of dom.js's dynamic-script module path.)
+                // For inline modules and modules without a base URL, we
+                // pass an empty string and the loader resolves relative
+                // imports against location.href in JS.
+                let result = if looks_like_module(source) {
+                    let src_lit = serde_json::to_string(source).unwrap_or_default();
+                    let url_lit =
+                        serde_json::to_string(url.as_deref().unwrap_or("")).unwrap_or_default();
+                    self.eval_void(&format!("__loadModule({src_lit}, {url_lit})"))
+                } else {
+                    self.eval_void(source)
+                };
                 let duration_us = eval_start.elapsed().as_micros() as u64;
                 match result {
                     Err(e) => {
@@ -1937,6 +1953,35 @@ enum ScriptKind {
 enum ScriptItem {
     Inline(String),
     External { url: String, kind: ScriptKind },
+}
+
+// Heuristic: does this source look like an ES module? Checks the first few
+// lines for `import` / `export` statements. Used by the static script-eval
+// loop to route module-shaped sources through __loadModule (which fetches
+// deps then evals) vs plain eval (which would throw SyntaxError on the
+// import keyword and dispatch script_executed{error}).
+//
+// Conservative — false negatives just go through plain eval (and fail
+// loudly via PR #6's eval-error path); false positives go through the
+// module loader (which strips imports + evals — equivalent to plain eval
+// for source with no actual imports). No correctness loss either way.
+fn looks_like_module(source: &str) -> bool {
+    for line in source.lines().take(50) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("import ")
+            || trimmed.starts_with("import{")
+            || trimmed.starts_with("import\"")
+            || trimmed.starts_with("import'")
+            || trimmed.starts_with("import*")
+            || trimmed.starts_with("export ")
+            || trimmed.starts_with("export{")
+            || trimmed.starts_with("export*")
+            || trimmed.starts_with("export default")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 // Walk the parsed HTML tree and collect <script> elements in document order.
