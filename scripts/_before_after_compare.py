@@ -61,9 +61,20 @@ def run(binary: Path, url: str, policy_on: bool) -> dict:
     p.stdin.flush()
     deadline = time.time() + NAV_TIMEOUT_S
     line = None
+    # Drain BOTH stdout and stderr — the new outcome_for_decision events
+    # (one per script_decision) push a lot more bytes through stderr than
+    # the original 5-site harness was sized for. If we only select on
+    # stdout, the OS pipe buffer fills and the binary blocks on stderr
+    # write, looking like a navigate hang. Same hazard the PR #5 review
+    # called out for the corpus collector — different surface.
+    stderr_buf = []
     while time.time() < deadline:
-        r, _, _ = select.select([p.stdout], [], [], 0.5)
-        if r:
+        r, _, _ = select.select([p.stdout, p.stderr], [], [], 0.5)
+        if p.stderr in r:
+            chunk = p.stderr.readline()
+            if chunk:
+                stderr_buf.append(chunk)
+        if p.stdout in r:
             line = p.stdout.readline()
             break
     wall_ms = (time.perf_counter() - t0) * 1000
