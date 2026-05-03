@@ -1215,10 +1215,41 @@
   // Expose globals
   globalThis.document = document;
   globalThis.Document = { prototype: document };
+
+  // document.currentScript — set by main.rs's script-eval loop before each
+  // external script runs. Webpack's automatic publicPath detection reads
+  // this to determine where chunks should be loaded from. Without it,
+  // bundles like Bluesky's main.js throw "Automatic publicPath is not
+  // supported in this browser" and abort hydration.
+  document.currentScript = null;
+  globalThis.__setCurrentScript = function(url) {
+    document.currentScript = url ? {
+      src: url,
+      tagName: 'SCRIPT',
+      nodeName: 'SCRIPT',
+      nodeType: 1,
+      getAttribute: function(n) { return n === 'src' ? url : null; },
+      hasAttribute: function(n) { return n === 'src' && !!url; },
+    } : null;
+  };
   globalThis.Element = Element;
   globalThis.Node = Node;
   globalThis.HTMLElement = Element;
   globalThis.Text = TextNode;
   globalThis.DocumentFragment = Node;
+  // Stub a few extra HTML element classes that frameworks use only for
+  // `instanceof` discrimination. We don't actually implement shadow DOM
+  // or templates — we just need the constructors to exist so checks like
+  //   if (node instanceof ShadowRoot) ...
+  // return false (as they should — we have no shadow DOM) instead of
+  // throwing a ReferenceError that aborts hydration. Bluesky's
+  // react-native-web bundle hits ShadowRoot; HTMLTemplateElement is a
+  // common companion miss we surface in the same shim.
+  function ShadowRoot() {}
+  function HTMLTemplateElement() {}
+  function HTMLIFrameElement() {}
+  globalThis.ShadowRoot = ShadowRoot;
+  globalThis.HTMLTemplateElement = HTMLTemplateElement;
+  globalThis.HTMLIFrameElement = HTMLIFrameElement;
 
 })();

@@ -755,6 +755,392 @@
   NoopObserver.prototype.takeRecords = function() { return []; };
   globalThis.PerformanceObserver = NoopObserver;
 
+  // ---- URL + URLSearchParams --------------------------------------------
+  // Minimal polyfills for the parts modern bundles actually use.
+  // Bluesky's main.js needs URLSearchParams to construct API endpoints.
+  // We don't try to be spec-perfect — just enough to parse, build, and
+  // serialize.
+  if (typeof globalThis.URLSearchParams === 'undefined') {
+    function URLSearchParams(init) {
+      this._pairs = [];
+      if (typeof init === 'string') {
+        var s = init;
+        if (s.charAt(0) === '?') s = s.slice(1);
+        if (s) {
+          var parts = s.split('&');
+          for (var i = 0; i < parts.length; i++) {
+            var eq = parts[i].indexOf('=');
+            var k = eq >= 0 ? parts[i].slice(0, eq) : parts[i];
+            var v = eq >= 0 ? parts[i].slice(eq + 1) : '';
+            try { k = decodeURIComponent(k.replace(/\+/g, ' ')); } catch (e) {}
+            try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) {}
+            this._pairs.push([k, v]);
+          }
+        }
+      } else if (init && typeof init === 'object') {
+        if (Array.isArray(init)) {
+          for (var j = 0; j < init.length; j++) {
+            this._pairs.push([String(init[j][0]), String(init[j][1])]);
+          }
+        } else if (typeof init.forEach === 'function') {
+          var self = this;
+          init.forEach(function(v, k) { self._pairs.push([String(k), String(v)]); });
+        } else {
+          for (var key in init) {
+            if (Object.prototype.hasOwnProperty.call(init, key)) {
+              this._pairs.push([key, String(init[key])]);
+            }
+          }
+        }
+      }
+    }
+    URLSearchParams.prototype.append = function(k, v) {
+      this._pairs.push([String(k), String(v)]);
+    };
+    URLSearchParams.prototype.delete = function(k) {
+      this._pairs = this._pairs.filter(function(p) { return p[0] !== k; });
+    };
+    URLSearchParams.prototype.get = function(k) {
+      for (var i = 0; i < this._pairs.length; i++) {
+        if (this._pairs[i][0] === k) return this._pairs[i][1];
+      }
+      return null;
+    };
+    URLSearchParams.prototype.getAll = function(k) {
+      return this._pairs.filter(function(p) { return p[0] === k; }).map(function(p) { return p[1]; });
+    };
+    URLSearchParams.prototype.has = function(k) {
+      for (var i = 0; i < this._pairs.length; i++) {
+        if (this._pairs[i][0] === k) return true;
+      }
+      return false;
+    };
+    URLSearchParams.prototype.set = function(k, v) {
+      var found = false;
+      this._pairs = this._pairs.filter(function(p) {
+        if (p[0] !== k) return true;
+        if (!found) { p[1] = String(v); found = true; return true; }
+        return false;
+      });
+      if (!found) this._pairs.push([String(k), String(v)]);
+    };
+    URLSearchParams.prototype.forEach = function(cb, thisArg) {
+      for (var i = 0; i < this._pairs.length; i++) cb.call(thisArg, this._pairs[i][1], this._pairs[i][0], this);
+    };
+    URLSearchParams.prototype.keys = function() {
+      var i = 0, p = this._pairs;
+      return { next: function() { return i < p.length ? {value: p[i++][0], done: false} : {value: undefined, done: true}; } };
+    };
+    URLSearchParams.prototype.values = function() {
+      var i = 0, p = this._pairs;
+      return { next: function() { return i < p.length ? {value: p[i++][1], done: false} : {value: undefined, done: true}; } };
+    };
+    URLSearchParams.prototype.entries = function() {
+      var i = 0, p = this._pairs;
+      return { next: function() { return i < p.length ? {value: [p[i][0], p[i++][1]], done: false} : {value: undefined, done: true}; } };
+    };
+    URLSearchParams.prototype.toString = function() {
+      var enc = function(s) { return encodeURIComponent(s).replace(/%20/g, '+'); };
+      return this._pairs.map(function(p) { return enc(p[0]) + '=' + enc(p[1]); }).join('&');
+    };
+    Object.defineProperty(URLSearchParams.prototype, 'size', {
+      get: function() { return this._pairs.length; }
+    });
+    globalThis.URLSearchParams = URLSearchParams;
+  }
+
+  // ---- URL constructor (lightweight) ------------------------------------
+  // We don't try to be spec-perfect — react-native-web mostly uses
+  // new URL(href).hostname/.pathname/.searchParams/.toString().
+  if (typeof globalThis.URL === 'undefined') {
+    function URL(input, base) {
+      var s = String(input);
+      // Resolve relative against base (very basic — full algorithm handled
+      // host-side via __host_resolve_url for navigation paths).
+      if (base && typeof __host_resolve_url === 'function' &&
+          !/^[a-z][a-z0-9+\-.]*:/i.test(s)) {
+        s = __host_resolve_url(s, String(base));
+      }
+      this.href = s;
+      // Parse: scheme://userinfo@host:port/path?search#hash
+      var m = s.match(/^([a-z][a-z0-9+\-.]*:)(?:\/\/([^\/\?#]*))?([^\?#]*)(\?[^#]*)?(#.*)?$/i);
+      if (m) {
+        this.protocol = m[1] || '';
+        var auth = m[2] || '';
+        var hashIdx = auth.indexOf('@');
+        if (hashIdx >= 0) auth = auth.slice(hashIdx + 1);
+        var portIdx = auth.lastIndexOf(':');
+        if (portIdx >= 0 && /^\d+$/.test(auth.slice(portIdx + 1))) {
+          this.host = auth;
+          this.hostname = auth.slice(0, portIdx);
+          this.port = auth.slice(portIdx + 1);
+        } else {
+          this.host = auth;
+          this.hostname = auth;
+          this.port = '';
+        }
+        this.pathname = m[3] || '/';
+        this.search = m[4] || '';
+        this.hash = m[5] || '';
+      } else {
+        this.protocol = ''; this.host = ''; this.hostname = ''; this.port = '';
+        this.pathname = s; this.search = ''; this.hash = '';
+      }
+      this.origin = this.protocol && this.host ? this.protocol + '//' + this.host : '';
+      this.searchParams = new URLSearchParams(this.search);
+    }
+    URL.prototype.toString = function() { return this.href; };
+    URL.prototype.toJSON = function() { return this.href; };
+    URL.createObjectURL = function() { return 'blob:stub'; };
+    URL.revokeObjectURL = function() {};
+    globalThis.URL = URL;
+  }
+
+  // ---- TextEncoder / TextDecoder ----------------------------------------
+  // Spec-minimal UTF-8 encoder/decoder. Bluesky's main.js needs both for
+  // its protocol-buffer encoding paths; many crypto and protocol bundles
+  // assume these exist.
+  if (typeof globalThis.TextEncoder === 'undefined') {
+    function TextEncoder() { this.encoding = 'utf-8'; }
+    TextEncoder.prototype.encode = function(str) {
+      str = String(str || '');
+      var out = [];
+      for (var i = 0; i < str.length; i++) {
+        var c = str.charCodeAt(i);
+        if (c < 0x80) {
+          out.push(c);
+        } else if (c < 0x800) {
+          out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+        } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+          var low = str.charCodeAt(i + 1);
+          if (low >= 0xdc00 && low <= 0xdfff) {
+            var cp = 0x10000 + ((c - 0xd800) << 10) + (low - 0xdc00);
+            out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
+                     0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+            i++;
+            continue;
+          }
+          out.push(0xef, 0xbf, 0xbd); // replacement char
+        } else {
+          out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+        }
+      }
+      return new Uint8Array(out);
+    };
+    globalThis.TextEncoder = TextEncoder;
+  }
+  if (typeof globalThis.TextDecoder === 'undefined') {
+    function TextDecoder(label) { this.encoding = (label || 'utf-8').toLowerCase(); }
+    TextDecoder.prototype.decode = function(buf) {
+      if (!buf) return '';
+      var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf);
+      var out = '';
+      for (var i = 0; i < bytes.length; ) {
+        var b = bytes[i++];
+        if (b < 0x80) {
+          out += String.fromCharCode(b);
+        } else if ((b & 0xe0) === 0xc0) {
+          var b2 = bytes[i++];
+          out += String.fromCharCode(((b & 0x1f) << 6) | (b2 & 0x3f));
+        } else if ((b & 0xf0) === 0xe0) {
+          var b2 = bytes[i++], b3 = bytes[i++];
+          out += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
+        } else if ((b & 0xf8) === 0xf0) {
+          var b2 = bytes[i++], b3 = bytes[i++], b4 = bytes[i++];
+          var cp = ((b & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f);
+          cp -= 0x10000;
+          out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+        }
+      }
+      return out;
+    };
+    globalThis.TextDecoder = TextDecoder;
+  }
+
+  // ---- Stub-only constructors (instanceof checks only) ------------------
+  // Frameworks use these for `if (x instanceof Y)` guards. Stubbing them
+  // means the check returns false (the right answer — we have no canvases,
+  // images, workers) instead of throwing ReferenceError that aborts hydration.
+  if (typeof globalThis.AbortSignal === 'undefined') {
+    function AbortSignal() { this.aborted = false; }
+    AbortSignal.abort = function() { var s = new AbortSignal(); s.aborted = true; return s; };
+    AbortSignal.timeout = function() { return new AbortSignal(); };
+    globalThis.AbortSignal = AbortSignal;
+  }
+  if (typeof globalThis.Request === 'undefined') {
+    function Request(input, init) {
+      this.url = typeof input === 'string' ? input : (input && input.url) || '';
+      init = init || {};
+      this.method = (init.method || 'GET').toUpperCase();
+      this.headers = init.headers || {};
+      this.body = init.body || null;
+    }
+    globalThis.Request = Request;
+  }
+  if (typeof globalThis.Response === 'undefined') {
+    function Response(body, init) {
+      init = init || {};
+      this.body = body;
+      this.status = init.status || 200;
+      this.statusText = init.statusText || '';
+      this.headers = init.headers || {};
+      this.ok = this.status >= 200 && this.status < 300;
+    }
+    Response.prototype.text = function() { return Promise.resolve(String(this.body || '')); };
+    Response.prototype.json = function() {
+      try { return Promise.resolve(JSON.parse(this.body || 'null')); }
+      catch (e) { return Promise.reject(e); }
+    };
+    globalThis.Response = Response;
+  }
+  function _stubClass() { return function() {}; }
+  if (typeof globalThis.HTMLImageElement === 'undefined') globalThis.HTMLImageElement = _stubClass();
+  if (typeof globalThis.HTMLCanvasElement === 'undefined') globalThis.HTMLCanvasElement = _stubClass();
+  if (typeof globalThis.HTMLVideoElement === 'undefined') globalThis.HTMLVideoElement = _stubClass();
+  if (typeof globalThis.HTMLAudioElement === 'undefined') globalThis.HTMLAudioElement = _stubClass();
+  if (typeof globalThis.CanvasRenderingContext2D === 'undefined') globalThis.CanvasRenderingContext2D = _stubClass();
+  if (typeof globalThis.OffscreenCanvas === 'undefined') globalThis.OffscreenCanvas = _stubClass();
+  if (typeof globalThis.ImageData === 'undefined') {
+    globalThis.ImageData = function(w, h) { this.width = w; this.height = h; this.data = new Uint8ClampedArray(0); };
+  }
+  if (typeof globalThis.Image === 'undefined') {
+    globalThis.Image = function() { this.src = ''; this.onload = null; this.onerror = null; };
+  }
+  if (typeof globalThis.Audio === 'undefined') globalThis.Audio = _stubClass();
+  if (typeof globalThis.Video === 'undefined') globalThis.Video = _stubClass();
+  if (typeof globalThis.MessageChannel === 'undefined') {
+    globalThis.MessageChannel = function() {
+      this.port1 = { postMessage: function() {}, onmessage: null, close: function() {}, start: function() {} };
+      this.port2 = { postMessage: function() {}, onmessage: null, close: function() {}, start: function() {} };
+    };
+  }
+  if (typeof globalThis.WebSocket === 'undefined') {
+    function WebSocket() { this.readyState = 3 /* CLOSED */; this.send = function() {}; this.close = function() {}; }
+    WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;
+    globalThis.WebSocket = WebSocket;
+  }
+  if (typeof globalThis.FileReader === 'undefined') globalThis.FileReader = _stubClass();
+  if (typeof globalThis.indexedDB === 'undefined') {
+    globalThis.indexedDB = { open: function() { var r = {onerror: null, onsuccess: null}; setTimeout(function() { if (r.onerror) r.onerror({}); }, 0); return r; }, deleteDatabase: function() {} };
+  }
+
+  // ---- Intl (minimal) ---------------------------------------------------
+  // QuickJS deliberately omits Intl ("Due to size constraints it is
+  // unlikely QuickJS will ever support the Intl APIs" — quickjs docs).
+  // Most page bundles only need it to NOT throw — output quality is
+  // secondary because we don't render. We return reasonable strings via
+  // the underlying Date/Number prototypes and stub the rarer APIs.
+  if (typeof globalThis.Intl === 'undefined') {
+    var Intl = {};
+    Intl.DateTimeFormat = function(locales, options) {
+      this.locales = locales || 'en-US';
+      this.options = options || {};
+    };
+    Intl.DateTimeFormat.prototype.format = function(date) {
+      try { return new Date(date || Date.now()).toString(); }
+      catch (e) { return ''; }
+    };
+    Intl.DateTimeFormat.prototype.formatToParts = function(date) {
+      var s = this.format(date);
+      return [{ type: 'literal', value: s }];
+    };
+    Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+      return Object.assign({ locale: String(this.locales || 'en-US') }, this.options);
+    };
+
+    Intl.NumberFormat = function(locales, options) {
+      this.locales = locales || 'en-US';
+      this.options = options || {};
+    };
+    Intl.NumberFormat.prototype.format = function(n) {
+      try { return Number(n).toString(); } catch (e) { return ''; }
+    };
+    Intl.NumberFormat.prototype.formatToParts = function(n) {
+      return [{ type: 'integer', value: this.format(n) }];
+    };
+    Intl.NumberFormat.prototype.resolvedOptions = function() {
+      return Object.assign({ locale: String(this.locales || 'en-US') }, this.options);
+    };
+
+    Intl.RelativeTimeFormat = function(locales, options) {
+      this.locales = locales || 'en-US';
+      this.options = options || {};
+    };
+    Intl.RelativeTimeFormat.prototype.format = function(value, unit) {
+      var n = Number(value);
+      if (n === 0) return 'now';
+      return (n > 0 ? 'in ' + n : Math.abs(n) + ' ' + unit + ' ago');
+    };
+    Intl.RelativeTimeFormat.prototype.formatToParts = function(value, unit) {
+      return [{ type: 'literal', value: this.format(value, unit) }];
+    };
+    Intl.RelativeTimeFormat.prototype.resolvedOptions = function() {
+      return { locale: String(this.locales || 'en-US') };
+    };
+
+    Intl.PluralRules = function(locales) { this.locales = locales || 'en-US'; };
+    Intl.PluralRules.prototype.select = function(n) {
+      n = Number(n);
+      if (n === 1 || n === -1) return 'one';
+      return 'other';
+    };
+    Intl.PluralRules.prototype.resolvedOptions = function() {
+      return { locale: String(this.locales || 'en-US') };
+    };
+
+    Intl.Collator = function(locales) { this.locales = locales || 'en-US'; };
+    Intl.Collator.prototype.compare = function(a, b) {
+      a = String(a); b = String(b);
+      return a < b ? -1 : a > b ? 1 : 0;
+    };
+    Intl.Collator.prototype.resolvedOptions = function() {
+      return { locale: String(this.locales || 'en-US') };
+    };
+
+    Intl.Locale = function(tag) {
+      this.baseName = String(tag || 'en-US');
+      this.language = this.baseName.split('-')[0] || 'en';
+      this.region = this.baseName.split('-')[1] || '';
+    };
+    Intl.Locale.prototype.toString = function() { return this.baseName; };
+    Intl.Locale.prototype.maximize = function() { return this; };
+    Intl.Locale.prototype.minimize = function() { return this; };
+
+    Intl.DisplayNames = function(locales, options) {
+      this.locales = locales; this.options = options || {};
+    };
+    Intl.DisplayNames.prototype.of = function(code) { return String(code); };
+    Intl.DisplayNames.prototype.resolvedOptions = function() {
+      return Object.assign({ locale: 'en-US' }, this.options);
+    };
+
+    Intl.ListFormat = function(locales, options) {
+      this.locales = locales; this.options = options || {};
+    };
+    Intl.ListFormat.prototype.format = function(list) {
+      var arr = Array.isArray(list) ? list : Array.from(list || []);
+      return arr.join(', ');
+    };
+    Intl.ListFormat.prototype.formatToParts = function(list) {
+      return [{ type: 'literal', value: this.format(list) }];
+    };
+
+    Intl.Segmenter = function() {};
+    Intl.Segmenter.prototype.segment = function(input) {
+      var s = String(input || '');
+      return [{ index: 0, segment: s, isWordLike: true }];
+    };
+
+    Intl.getCanonicalLocales = function(locales) {
+      if (!locales) return [];
+      return Array.isArray(locales) ? locales.map(String) : [String(locales)];
+    };
+
+    Intl.supportedValuesOf = function() { return []; };
+
+    globalThis.Intl = Intl;
+  }
+
   // ---- atob / btoa ------------------------------------------------------
   var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   globalThis.atob = function(str) {

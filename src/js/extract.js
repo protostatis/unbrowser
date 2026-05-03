@@ -57,10 +57,102 @@
     if (!parsed) return null;
     // Drill to the most useful subtree if available.
     var page = parsed && parsed.props && parsed.props.pageProps;
+    if (!page) {
+      return { strategy: 'next_data', confidence: 0.7, data: parsed };
+    }
+    // pageProps with substantial nested content is almost always the page's
+    // primary app data (markets list on Polymarket, products on a Shopify-
+    // Next site, posts on a forum). Bump above json_ld's 0.95 so the
+    // auto-picker prefers it over the typically-smaller schema.org metadata.
+    // Threshold (1 KB serialized) excludes routing-only pageProps that some
+    // marketing pages emit.
+    var size = 0;
+    try { size = JSON.stringify(page).length; } catch (e) {}
     return {
       strategy: 'next_data',
-      confidence: page ? 0.9 : 0.7,
-      data: page || parsed,
+      confidence: size > 1024 ? 0.97 : 0.85,
+      data: page,
+    };
+  }
+
+  // Next.js App Router (RSC) — the new replacement for __NEXT_DATA__. The
+  // page emits many <script> blocks of the form
+  //   self.__next_f.push([1, "<key>:<value>\n<key>:<value>\n..."])
+  // where each line is a Flight-protocol entry. We concatenate the string
+  // payloads (chunk-boundary-agnostic by design — that's the protocol),
+  // split into <key>:<value> records, and JSON-parse the values that are
+  // plain data (skipping the "$S..." type-symbol lines and "I[id,...]"
+  // module-reference lines that aren't content).
+  //
+  // Returns the parsed entries as a {key: value} dict. The key is the
+  // chunk's reference id; values are the route/page state, server-action
+  // returns, and prefetched data the page would otherwise hydrate from.
+  function strategyRscPayload() {
+    var pushRe = /__next_f\.push\(\s*\[\s*1\s*,\s*("(?:\\.|[^"\\])*")\s*\]\s*\)/g;
+    var chunks = [];
+    // First try the live DOM (works on sites that don't clean up after
+    // hydration — e.g. Tailwind).
+    var scripts = document.querySelectorAll('script');
+    for (var i = 0; i < scripts.length; i++) {
+      var t = scripts[i].textContent || '';
+      if (t.indexOf('__next_f.push') < 0) continue;
+      pushRe.lastIndex = 0;
+      var m;
+      while ((m = pushRe.exec(t)) !== null) {
+        try { chunks.push(JSON.parse(m[1])); } catch (e) {}
+      }
+    }
+    // Fallback: scan the raw HTML body if hydration scripts have removed
+    // the inline `<script>` blocks (Next.js App Router does this — by the
+    // time we extract, the live DOM has 0 scripts containing __next_f even
+    // though the original body had dozens). The host function returns the
+    // body of the most recent navigate.
+    if (!chunks.length && typeof __host_raw_body === 'function') {
+      var raw = __host_raw_body();
+      if (raw) {
+        pushRe.lastIndex = 0;
+        var m2;
+        while ((m2 = pushRe.exec(raw)) !== null) {
+          try { chunks.push(JSON.parse(m2[1])); } catch (e) {}
+        }
+      }
+    }
+    if (!chunks.length) return null;
+
+    var combined = chunks.join('');
+    var entries = {};
+    var lines = combined.split('\n');
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (!line) continue;
+      var colon = line.indexOf(':');
+      if (colon <= 0) continue;
+      var key = line.substring(0, colon);
+      var value = line.substring(colon + 1);
+      if (!key || !value) continue;
+      // Skip module references and type symbols — they're plumbing, not data:
+      //   "$Sreact.fragment" — symbol reference
+      //   I[id, [chunks], "name"] — client component module reference
+      //   HL[...] — hint/preload directive
+      var c0 = value.charAt(0);
+      if (c0 === 'I' && value.charAt(1) === '[') continue;
+      if (c0 === 'H' && (value.charAt(1) === 'L' || value.charAt(1) === 'B')) continue;
+      if (c0 === '"' && value.charAt(1) === '$') continue;
+      try {
+        entries[key] = JSON.parse(value);
+      } catch (e) { /* not parseable JSON — skip */ }
+    }
+    var keyCount = Object.keys(entries).length;
+    if (keyCount === 0) return null;
+    var size = 0;
+    try { size = JSON.stringify(entries).length; } catch (e) {}
+    // Confidence parallels next_data: substantial RSC data is the page's
+    // primary state. Below next_data's 0.97 so a hybrid page (rare) prefers
+    // pageProps. Above json_ld so SPAs without metadata still surface data.
+    return {
+      strategy: 'rsc_payload',
+      confidence: size > 1024 ? 0.93 : 0.75,
+      data: entries,
     };
   }
 
@@ -336,6 +428,7 @@
     var all = [
       ['json_ld', strategyJsonLd],
       ['next_data', strategyNextData],
+      ['rsc_payload', strategyRscPayload],         // Next.js App Router
       ['nuxt_data', strategyNuxtData],
       ['json_in_script', strategyJsonInScript],   // Magento, Shopify, etc.
       ['og_meta', strategyOgMeta],
@@ -355,6 +448,7 @@
     }
     var tried = [];
     var best = null;
+    var hits = [];  // strategies with confidence >= 0.5, full data carried
     for (var j = 0; j < all.length; j++) {
       var name = all[j][0], fn = all[j][1];
       try {
@@ -362,13 +456,22 @@
         tried.push({ strategy: name, confidence: res ? res.confidence : 0,
                      hit: !!res });
         if (res && (!best || res.confidence > best.confidence)) best = res;
+        if (res && res.confidence >= 0.5) {
+          hits.push({ strategy: name, confidence: res.confidence, data: res.data });
+        }
       } catch (e) {
         tried.push({ strategy: name, confidence: 0, hit: false,
                      error: String(e && e.message || e) });
       }
     }
     if (!best) return { strategy: 'none', confidence: 0, data: null, tried: tried };
+    // Sort hits by confidence desc; cap at 5 to bound payload size on pages
+    // where many strategies hit (Polymarket: json_ld + next_data +
+    // json_in_script + og_meta all return data).
+    hits.sort(function(a, b) { return b.confidence - a.confidence; });
+    if (hits.length > 5) hits.length = 5;
     best.tried = tried;
+    best.all_hits = hits;
     return best;
   };
 })();

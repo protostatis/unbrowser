@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 mod bytecode_cache;
+mod challenge;
 mod network_store;
 mod policy;
 mod prefit;
@@ -348,7 +349,13 @@ struct Session {
     // CPU-pegged process behind.
     eval_deadline_ms: Arc<AtomicU64>,
     last_url: Option<String>,
-    last_body: Option<String>,
+    // Raw HTML body of the most recent navigate, shared with the JS layer
+    // via the __host_raw_body() host function. Arc'd so the function closure
+    // can read it after the DOM has been mutated by hydration scripts —
+    // e.g. Next.js App Router removes inline `__next_f.push` script
+    // elements after rehydrating, but the raw body still has them, which
+    // is what `strategyRscPayload` in extract.js needs.
+    last_body: Arc<Mutex<Option<String>>>,
     // True when --policy=blocklist (or UNBROWSER_POLICY=blocklist) is set.
     // Read by the external-script fetch loop in navigate_with and by the
     // __host_fetch_send hook — see src/policy.rs.
@@ -391,6 +398,9 @@ impl Session {
     fn new(profile: &Profile, policy_block: bool) -> Result<Self> {
         let js_rt = rquickjs::Runtime::new().context("rquickjs Runtime::new")?;
         let js_ctx = rquickjs::Context::full(&js_rt).context("rquickjs Context::full")?;
+        // Allocated up here so the __host_raw_body() host function below can
+        // clone the Arc into its closure before Session is constructed.
+        let last_body_arc: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         // Install the always-on watchdog. Every nested QuickJS eval (including
         // ones inside settle's __pumpTimers callbacks and __pollFetches
@@ -550,6 +560,24 @@ impl Session {
                 .set("__host_resolve_url", host_resolve_url)
                 .map_err(|e| anyhow!("set __host_resolve_url: {e}"))?;
 
+            // __host_raw_body() — returns the raw HTML body of the most
+            // recent navigate. Used by extract.js's strategyRscPayload after
+            // hydration scripts have removed inline `__next_f.push` script
+            // elements (Next.js App Router does this after hydrating; the
+            // raw body still contains the RSC chunks).
+            let body_for_host = last_body_arc.clone();
+            let host_raw_body = rquickjs::Function::new(ctx.clone(), move || -> String {
+                body_for_host
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .unwrap_or_default()
+            })
+            .map_err(|e| anyhow!("install __host_raw_body: {e}"))?;
+            ctx.globals()
+                .set("__host_raw_body", host_raw_body)
+                .map_err(|e| anyhow!("set __host_raw_body: {e}"))?;
+
             // __host_parse_html_fragment(html) — parses an HTML fragment
             // string into the same JSON tree shape main.rs's full document
             // parser produces. Used by dom.js's Element.innerHTML setter
@@ -590,7 +618,7 @@ impl Session {
             _fetch: fetch,
             eval_deadline_ms,
             last_url: None,
-            last_body: None,
+            last_body: last_body_arc,
             policy_block,
             nav_counter: AtomicU64::new(0),
             nav_ids_issued: Mutex::new(HashSet::new()),
@@ -670,15 +698,15 @@ impl Session {
         }
         let key = bytecode_cache::cache_key(source, &self.shim_hash);
         let root = &self.bytecode_cache_root;
-        // Suspend the eval-deadline watchdog for the compile path. The
-        // watchdog interrupt fires periodically inside JS_Eval and aborts
-        // when now >= deadline. For COMPILE_ONLY eval that doesn't run
-        // user code, the watchdog spuriously aborts on scripts above
-        // ~16 KB (observed empirically). Compile is bounded by source
-        // length anyway. Restored before returning.
-        let prev_dl = self.eval_deadline_ms.swap(0, Ordering::Relaxed);
-        let result = self.js_ctx.with(|ctx| -> Result<()> {
-            // Try cache.
+        // The eval-deadline watchdog must be SUSPENDED only across
+        // compile_to_bytecode (JS_Eval COMPILE_ONLY) — the watchdog
+        // spuriously aborts on >~16KB scripts during the parse-only path.
+        // It MUST stay armed across load_and_eval, which actually runs
+        // user code and can loop forever. Earlier code suspended it for
+        // the whole closure, which let cached bundles run unbounded.
+        let dl = self.eval_deadline_ms.clone();
+        self.js_ctx.with(|ctx| -> Result<()> {
+            // Try cache. Watchdog stays armed — load_and_eval runs user code.
             if let Some(bytes) = bytecode_cache::read(root, &key) {
                 let bytes_len = bytes.len();
                 match bytecode_cache::load_and_eval(&ctx, &bytes) {
@@ -695,23 +723,34 @@ impl Session {
                         return Ok(());
                     }
                     Err(e) => {
-                        // Corrupt or version-skew. Fall through to recompile;
-                        // the corrupt file gets overwritten by the write below.
+                        // Could be a true JS exception OR a watchdog interrupt
+                        // (cached bundle ran past the deadline). Surface either
+                        // back to the caller so script_executed gets the right
+                        // error and `interrupted` flag.
                         emit_event(
                             "bytecode_cache",
                             json!({
                                 "schema_version": 1,
-                                "hit": false,
+                                "hit": true,
                                 "name": name,
                                 "load_error": e,
                             }),
                         );
+                        let caught = ctx.catch();
+                        return if caught.is_null() || caught.is_undefined() {
+                            Err(anyhow!("bytecode eval threw (no exception captured)"))
+                        } else {
+                            Err(anyhow!("{}", format_js_exception(caught)))
+                        };
                     }
                 }
             }
-            // Cache miss: compile, persist, then execute via the
-            // freshly-produced bytecode (avoids running JS_Eval twice).
-            match bytecode_cache::compile_to_bytecode(&ctx, source, name) {
+            // Cache miss: compile (watchdog suspended just for this call),
+            // persist, then execute via the freshly-produced bytecode.
+            let prev_dl = dl.swap(0, Ordering::Relaxed);
+            let compile_res = bytecode_cache::compile_to_bytecode(&ctx, source, name);
+            dl.store(prev_dl, Ordering::Relaxed);
+            match compile_res {
                 Ok(bytes) => {
                     let _ = bytecode_cache::write(root, &key, &bytes);
                     let bytes_len = bytes.len();
@@ -727,12 +766,15 @@ impl Session {
                     );
                     match result {
                         Ok(()) => Ok(()),
-                        // Eval-time exception — surface via ctx.catch
-                        // exactly like plain eval would.
-                        Err(_) => match ctx.catch().get::<rquickjs::Value>() {
-                            Ok(_) => Err(anyhow!("{}", format_js_exception(ctx.catch()))),
-                            Err(_) => Err(anyhow!("bytecode eval threw (no exception captured)")),
-                        },
+                        // Eval-time exception OR watchdog interrupt.
+                        Err(_) => {
+                            let caught = ctx.catch();
+                            if caught.is_null() || caught.is_undefined() {
+                                Err(anyhow!("bytecode eval threw (no exception captured)"))
+                            } else {
+                                Err(anyhow!("{}", format_js_exception(caught)))
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -758,11 +800,7 @@ impl Session {
                     }
                 }
             }
-        });
-        // Restore the watchdog before returning so the rest of the
-        // navigate stays bounded.
-        self.eval_deadline_ms.store(prev_dl, Ordering::Relaxed);
-        result
+        })
     }
 
     fn eval(&self, code: &str) -> Result<Value> {
@@ -869,10 +907,23 @@ impl Session {
             );
         }
 
-        let challenge = detect_challenge(status, &body);
-        if let Some(c) = &challenge {
-            emit_event("challenge", c.clone());
+        let challenge_detection = challenge::detect(status, &body);
+        if let Some(d) = &challenge_detection {
+            emit_event("challenge", serde_json::to_value(d).unwrap_or_default());
+            if let Some(solution_url) = challenge::solve_url(d, &body, &final_url) {
+                emit_event(
+                    "challenge_auto_solved",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "provider": d.provider,
+                        "solution_url": solution_url,
+                    }),
+                );
+                return Box::pin(self.navigate(&solution_url, exec_scripts)).await;
+            }
         }
+        let challenge = challenge_detection.map(|d| serde_json::to_value(d).unwrap_or_default());
 
         let tree = parse_html_to_tree(&body);
         self.seed_dom(&tree)?;
@@ -1182,6 +1233,17 @@ impl Session {
             let mut interrupted: usize = 0;
             for (script_id, kind_str, url, source) in &sources {
                 let eval_start = std::time::Instant::now();
+                // Set document.currentScript so webpack's automatic-publicPath
+                // detection works. Bluesky's main.js (and many webpack bundles
+                // with chunked output) calls
+                //   __webpack_require__.p = <derive from currentScript.src>
+                // and throws "Automatic publicPath is not supported in this
+                // browser" if currentScript is missing — that bails hydration
+                // before any DOM mounting happens.
+                if let Some(u) = url.as_deref() {
+                    let url_lit = serde_json::to_string(u).unwrap_or_default();
+                    let _ = self.eval_void(&format!("__setCurrentScript({url_lit})"));
+                }
                 // Three-way routing:
                 //   1. Module-shaped sources (PR #11) → __loadModule, which
                 //      recursively loads deps then evals the cleaned body.
@@ -1200,6 +1262,9 @@ impl Session {
                     let cache_name = url.as_deref().unwrap_or("inline").to_string();
                     self.eval_with_cache(source, &cache_name)
                 };
+                if url.is_some() {
+                    let _ = self.eval_void("__setCurrentScript(null)");
+                }
                 let duration_us = eval_start.elapsed().as_micros() as u64;
                 match result {
                     Err(e) => {
@@ -1254,12 +1319,39 @@ impl Session {
             // script-phase one. (Settle pump callbacks are bounded too — they
             // run inside QuickJS evals which still consult the same atomic.)
             self.restore_eval_deadline(prev_deadline);
-            // Fire DOMContentLoaded → settle → load → settle.
+            // Fire DOMContentLoaded → settle → load → settle. Each settle
+            // emits a `settle_exit` event with reason + counts so traces show
+            // exactly why we bailed (idle / budget_exhausted / max_iters).
+            // Without this, a hung Next.js hydration looks indistinguishable
+            // from a clean exit in the NDJSON stream — only `policy_trace`
+            // carries the settle blob and it's often truncated.
             let _ = self
                 .eval("typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()");
             let after_dcl = self.settle(2000, 100).await.ok();
+            if let Some(r) = &after_dcl {
+                emit_event(
+                    "settle_exit",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "phase": "after_dcl",
+                        "result": r,
+                    }),
+                );
+            }
             let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
             let after_load = self.settle(1500, 50).await.ok();
+            if let Some(r) = &after_load {
+                emit_event(
+                    "settle_exit",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "phase": "after_load",
+                        "result": r,
+                    }),
+                );
+            }
             // Phase A: per-navigation policy trace. One event summarizing
             // every decision made during this navigate, joined to outcomes
             // via navigation_id when the driver later calls report_outcome.
@@ -1321,7 +1413,9 @@ impl Session {
         };
 
         self.last_url = Some(final_url.clone());
-        self.last_body = Some(body);
+        if let Ok(mut g) = self.last_body.lock() {
+            *g = Some(body);
+        }
 
         let blockmap = self.blockmap().unwrap_or(Value::Null);
 
@@ -1361,21 +1455,73 @@ impl Session {
                 Ok(v) => {
                     let size = serde_json::to_string(&v).map(|s| s.len()).unwrap_or(0);
                     if size > MAX_INLINE_EXTRACT_BYTES {
-                        let strategy = v.get("strategy").cloned().unwrap_or(Value::Null);
-                        let confidence = v.get("confidence").cloned().unwrap_or(Value::Null);
-                        (
-                            Some(json!({
-                                "strategy": strategy,
-                                "confidence": confidence,
-                                "data": null,
-                                "truncated": true,
-                                "size_bytes": size,
-                                "hint": format!(
-                                    "extract result {size} bytes exceeds {MAX_INLINE_EXTRACT_BYTES} byte inline cap; call extract() to retrieve full data"
-                                ),
-                            })),
-                            None,
-                        )
+                        // Primary doesn't fit. Walk all_hits (already sorted
+                        // by confidence desc) and pick the first one that
+                        // does fit — gives the agent SOME usable data inline
+                        // instead of a stub. e.g. Polymarket's next_data is
+                        // ~750KB; json_ld (20KB, conf 0.95) fits and carries
+                        // the markets list. Agent can call extract() for the
+                        // full primary if they want.
+                        let primary_strategy = v.get("strategy").cloned().unwrap_or(Value::Null);
+                        let primary_confidence =
+                            v.get("confidence").cloned().unwrap_or(Value::Null);
+                        let mut chosen: Option<Value> = None;
+                        if let Some(hits) = v.get("all_hits").and_then(|h| h.as_array()) {
+                            for hit in hits {
+                                let hit_size =
+                                    serde_json::to_string(hit).map(|s| s.len()).unwrap_or(0);
+                                if hit_size <= MAX_INLINE_EXTRACT_BYTES {
+                                    let mut sub = json!({
+                                        "strategy": hit.get("strategy").cloned().unwrap_or(Value::Null),
+                                        "confidence": hit.get("confidence").cloned().unwrap_or(Value::Null),
+                                        "data": hit.get("data").cloned().unwrap_or(Value::Null),
+                                        "primary_truncated": {
+                                            "strategy": primary_strategy.clone(),
+                                            "confidence": primary_confidence.clone(),
+                                            "size_bytes": size,
+                                            "hint": format!(
+                                                "primary strategy {strat} ({size} bytes) exceeds {MAX_INLINE_EXTRACT_BYTES} byte inline cap; this fallback is the largest fitting hit. Call extract() for the full primary.",
+                                                strat = primary_strategy
+                                            ),
+                                        },
+                                    });
+                                    // Carry truncated all_hits summary for visibility.
+                                    if let Some(map) = sub.as_object_mut() {
+                                        let summary: Vec<Value> = hits.iter().map(|h| {
+                                            let s = serde_json::to_string(h).map(|s| s.len()).unwrap_or(0);
+                                            json!({
+                                                "strategy": h.get("strategy").cloned().unwrap_or(Value::Null),
+                                                "confidence": h.get("confidence").cloned().unwrap_or(Value::Null),
+                                                "size_bytes": s,
+                                            })
+                                        }).collect();
+                                        map.insert(
+                                            "all_hits_summary".into(),
+                                            Value::Array(summary),
+                                        );
+                                    }
+                                    chosen = Some(sub);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(c) = chosen {
+                            (Some(c), None)
+                        } else {
+                            (
+                                Some(json!({
+                                    "strategy": primary_strategy,
+                                    "confidence": primary_confidence,
+                                    "data": null,
+                                    "truncated": true,
+                                    "size_bytes": size,
+                                    "hint": format!(
+                                        "extract result {size} bytes exceeds {MAX_INLINE_EXTRACT_BYTES} byte inline cap and no smaller hit fit either; call extract() to retrieve full data"
+                                    ),
+                                })),
+                                None,
+                            )
+                        }
                     } else {
                         (Some(v), None)
                     }
@@ -1480,6 +1626,15 @@ impl Session {
         let mut total_microtasks: u64 = 0;
         let mut total_timers: u64 = 0;
         let mut total_fetches: u64 = 0;
+        // Polling-detection: when a setInterval keeps firing but its
+        // callback produces no microtasks and no new fetches, that's
+        // live-polling (price ticker, animation frame, debounce timer).
+        // It will never go idle. Count consecutive iters of "timers fired
+        // but nothing else happened" — bail after 3 in a row to save the
+        // remaining settle budget for pages that legitimately need it.
+        // Polymarket's after_dcl/after_load both burned the full 2s+1.5s
+        // budget firing live-price intervals before this check existed.
+        let mut polling_iters: u32 = 0;
 
         // Why settle exited. "idle" is the success case (all queues drained);
         // the others mean we hit a budget. Drivers can use this to pick a
@@ -1501,7 +1656,13 @@ impl Session {
                 break;
             }
 
-            // 1. Drain microtasks.
+            // 1. Drain microtasks. The inner loop honors max_ms — without
+            // this, a MutationObserver→mutate→MutationObserver cascade (common
+            // on hydrating Next.js / React SPAs like Vercel, Tailwind, Next.js
+            // homepage) can run thousands of microtasks in a single outer
+            // iter and blow past max_ms by 10–20×. Cap at 2000 microtasks per
+            // pass as defense-in-depth (a normal page's burst is well under
+            // a few hundred; 2k is 10× headroom).
             let mut mt_this_iter: u64 = 0;
             loop {
                 let had_more = self
@@ -1512,8 +1673,11 @@ impl Session {
                     break;
                 }
                 mt_this_iter += 1;
-                if mt_this_iter > 10_000 {
-                    break; // safety against infinite microtask loops
+                if mt_this_iter > 2_000 {
+                    break;
+                }
+                if start.elapsed().as_millis() as u64 >= max_ms {
+                    break;
                 }
             }
             total_microtasks += mt_this_iter;
@@ -1540,6 +1704,29 @@ impl Session {
             if pending_timers == 0 && pending_fetches == 0 && !microtasks_pending {
                 reason = "idle";
                 break; // queue fully empty — the success case
+            }
+
+            // Polling detection. The streak counts iters where no useful
+            // work happened (no microtasks ran, no fetches resolved) but
+            // timers either fired without consequence OR are pending. It
+            // resets only when something productive happens.
+            //
+            // Note that the loop alternates "timer fires" iters and "sleep
+            // until next deadline" iters, so we can't gate this on
+            // `fired > 0` — that would reset every sleep iter and never
+            // accumulate. After 3 streak iters with no useful work and
+            // no pending fetches/microtasks, assume the page is stuck on
+            // a poll loop (live price, animation frame, debounce timer)
+            // and exit with the work so far.
+            let useful_work = mt_this_iter > 0 || resolved > 0;
+            if useful_work {
+                polling_iters = 0;
+            } else if !microtasks_pending && pending_fetches == 0 {
+                polling_iters += 1;
+                if polling_iters >= 3 {
+                    reason = "polling_detected";
+                    break;
+                }
             }
 
             let did_work_this_iter = mt_this_iter > 0 || fired > 0 || resolved > 0;
@@ -1578,9 +1765,12 @@ impl Session {
             "pending_fetches": self.eval("__pendingFetches()")?.as_u64().unwrap_or(0),
             "pending_microtasks": self.js_rt.is_job_pending(),
             // Why settle exited. One of:
-            //   "idle"             — all queues drained (success)
-            //   "budget_exhausted" — wall-clock max_ms hit
-            //   "max_iters"        — iteration cap hit (typically pathological microtask loop)
+            //   "idle"               — all queues drained (success)
+            //   "budget_exhausted"   — wall-clock max_ms hit
+            //   "max_iters"          — iteration cap hit (pathological microtask loop)
+            //   "polling_detected"   — timers kept firing without producing
+            //                          microtasks/fetches (live-poll setInterval);
+            //                          page is content-stable, just poll-perpetual
             // Drivers should use this to choose a recovery action.
             "reason": reason,
             // Back-compat: timed_out=true matches either budget_exhausted or
@@ -1938,210 +2128,6 @@ fn format_js_exception(ex: rquickjs::Value) -> String {
         return s;
     }
     "<unknown JS exception>".to_string()
-}
-
-// Anti-bot challenge detector. Aligned with private-core's
-// challenge_detection.py: vendor names, confidence scores, "matched" patterns.
-// Adds two fields private-core doesn't carry yet (clearance_cookie hint, status)
-// so a router downstream can decide WHICH cookie to extract on escalation.
-//
-// Returns the *highest-confidence* match, not the first. Returns None on the
-// happy path (no signatures matched).
-fn detect_challenge(status: u16, body: &str) -> Option<Value> {
-    // Cheap early-out: very large 2xx responses are almost certainly real
-    // content (article pages, marketplace results). Real challenge pages are
-    // typically under 50KB; the 80KB threshold buys headroom while still
-    // catching cases like eBay's "Pardon Our Interruption" interstitial
-    // (200 + 13KB, would be missed by an 8KB threshold).
-    if (200..300).contains(&status) && body.len() > 80_000 {
-        return None;
-    }
-    let lower = body.to_lowercase();
-
-    // (vendor, confidence, &[lowercase substrings to match], clearance_cookie_hint)
-    // Patterns are case-insensitive (we lowercase the body once). Substring match,
-    // not regex — we don't pull in a regex crate just for this.
-    type Group = (&'static str, f64, &'static [&'static str], &'static str);
-    let groups: &[Group] = &[
-        ("arkose_labs", 0.98, &["arkoselabs", "funcaptcha"], ""),
-        (
-            "cloudflare_turnstile",
-            0.97,
-            &[
-                "just a moment",
-                "checking your browser",
-                // Newer wording (post-2024 Turnstile/managed challenge):
-                "verifying you are human",
-                "needs to review the security of your connection",
-                "performance & security by cloudflare",
-                "cf-challenge",
-                "cf_challenge",
-                "turnstile",
-                "__cf_chl_",
-                "cf-mitigated",
-            ],
-            "cf_clearance",
-        ),
-        (
-            "aws_waf",
-            0.96,
-            &[
-                "awswafcookiedomainlist",
-                "gokuprops",
-                "aws-waf-token",
-                "/awswaf/",
-                "challenge.js",
-            ],
-            "aws-waf-token",
-        ),
-        (
-            "recaptcha",
-            0.95,
-            &[
-                "g-recaptcha",
-                "google recaptcha",
-                "recaptcha/api2",
-                "i'm not a robot",
-                "im not a robot",
-            ],
-            "",
-        ),
-        (
-            "perimeterx_block",
-            0.94,
-            &[
-                "px-captcha",
-                "_pxappid",
-                "/_px",
-                "robot or human",
-                "/blocked?url=",
-            ],
-            "_px3",
-        ),
-        (
-            "datadome",
-            0.93,
-            &["datadome", "captcha-delivery"],
-            "datadome",
-        ),
-        (
-            "press_hold",
-            0.92,
-            &[
-                "press & hold",
-                "press and hold",
-                "press&hold",
-                "hold to confirm",
-            ],
-            "",
-        ),
-        (
-            "yahoo_sad_panda",
-            0.90,
-            &[
-                "sad-panda",
-                "sorry, the page you requested cannot be found",
-                "yahoo.*nytransit",
-            ],
-            "",
-        ),
-        (
-            "akamai_bmp",
-            0.88,
-            &["_abck=", "bm_sz=", "akamai bot manager"],
-            "_abck",
-        ),
-        (
-            "imperva",
-            0.85,
-            &["_incapsula", "incident_id"],
-            "incap_ses_*",
-        ),
-        // "Pardon Our Interruption" / "Are you a robot" interstitials —
-        // typically status 200 + small body + a friendly title. eBay,
-        // Distil Networks-class, some Imperva deployments. Confidence set
-        // above cloudflare_turnstile (0.97) because these phrases are MORE
-        // specific than "checking your browser" / "just a moment" — eBay's
-        // Distil page contains both, and we want the specific match to win.
-        (
-            "interstitial",
-            0.99,
-            &[
-                "pardon our interruption",
-                "are you a robot",
-                "are you a human",
-                "automated access has been blocked",
-                "your browser has been flagged",
-                "as you were browsing",
-            ],
-            "",
-        ),
-        (
-            "generic_human_verification",
-            0.76,
-            &[
-                "verify you are human",
-                "verify that you are human",
-                "verify that you're human",
-                "please wait for verification",
-                "please wait while we verify",
-                "unusual traffic",
-                "access to this page has been denied",
-                "access denied",
-                "automated requests",
-                "sorry, you have been blocked",
-                "you are being rate limited",
-            ],
-            "",
-        ),
-    ];
-
-    let mut best: Option<(&'static str, f64, &'static str, Vec<&'static str>)> = None;
-    for (vendor, confidence, patterns, cookie) in groups {
-        let matches: Vec<&'static str> = patterns
-            .iter()
-            .copied()
-            .filter(|p| lower.contains(*p))
-            .collect();
-        if !matches.is_empty() && best.as_ref().is_none_or(|(_, c, _, _)| *confidence > *c) {
-            best = Some((*vendor, *confidence, *cookie, matches));
-        }
-    }
-
-    // Fallback: tiny-body + status anomaly = soft block from an unknown vendor.
-    // Conservative thresholds so legitimate small 4xx pages on real sites don't trip it:
-    //   - 4xx/5xx OR an unusual 2xx status like 202 (used by AWS WAF)
-    //   - body shorter than 5KB (real error pages are usually fuller)
-    //   - no specific signature already matched
-    if best.is_none() {
-        let anomalous_status = !matches!(status, 200 | 301 | 302 | 304 | 404 | 410)
-            && (status >= 400 || status == 202 || status == 401 || status == 403);
-        if anomalous_status && body.len() < 5000 {
-            return Some(json!({
-                "blocked": true,
-                "provider": "unknown_block",
-                "confidence": 0.55,
-                "status": status,
-                "matched": [],
-                "clearance_cookie": Value::Null,
-                "reason": format!("Tiny body ({} bytes) on anomalous status {} with no known vendor signature — likely a soft block.", body.len(), status),
-                "hint": "Inspect `body` to identify the vendor, escalate to real Chrome to confirm the page renders, or skip this URL.",
-            }));
-        }
-    }
-
-    best.map(|(vendor, confidence, cookie, matches)| {
-        json!({
-            "blocked": true,
-            "provider": vendor,
-            "confidence": confidence,
-            "status": status,
-            "matched": matches,
-            "clearance_cookie": if cookie.is_empty() { Value::Null } else { Value::String(cookie.to_string()) },
-            "reason": format!("Matched {vendor} challenge signatures."),
-            "hint": "Solve once in real Chrome (or via unchainedsky CLI), copy the clearance cookie via DevTools, paste with cookies_set, then retry navigate. Cookie typically lasts 30 min – 24 h.",
-        })
-    })
 }
 
 // One <script> element from a parsed page.
@@ -2682,8 +2668,8 @@ async fn rpc_main(profile: Profile) -> Result<()> {
                 }
                 None => err_response(id, -32602, "missing 'url' param"),
             },
-            "body" => match &session.last_body {
-                Some(b) => ok_response(id, Value::String(b.clone())),
+            "body" => match session.last_body.lock().ok().and_then(|g| g.clone()) {
+                Some(b) => ok_response(id, Value::String(b)),
                 None => err_response(id, -3, "no body — call navigate first"),
             },
             "query" => match req.params.get("selector").and_then(|v| v.as_str()) {
@@ -2899,7 +2885,7 @@ fn mcp_tools() -> Value {
     json!([
         {
             "name": "navigate",
-            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, extracts inline AND external <script> tags from the parsed HTML, fetches externals in parallel (8s per-fetch timeout), eval's them in document order in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. `<script async>` is honored: async scripts execute after the sync queue. When `--policy=blocklist` is set, tracker URLs are blocked at script-fetch time (see scripts.policy_blocked in the result). Returns a `scripts` summary with inline_count, external_count, async_count, policy_blocked, executed, errors.\n\nAuto-extract: when the page embeds JSON-bearing <script> tags (density.json_scripts > 0 — covers application/json, application/ld+json, text/x-magento-init, text/x-shopify-app, etc.), navigate auto-runs `extract()` and returns the result as the `extract` field. Saves a round trip on the common case where the data the JS would have rendered is already sitting in the HTML — JSON-LD article schemas on news sites, __NEXT_DATA__ page state on Next.js apps, json_in_script product blobs on Magento/Shopify, GitHub RSC payloads, etc. Capped at 256 KB inline; over that limit `extract` returns a stub with strategy/confidence/size_bytes/hint and the agent should call `extract()` explicitly to retrieve the full payload. Pages with no embedded JSON get extract:null and pay zero extra cost.",
+            "description": "Fetch a URL with Chrome-fingerprinted HTTP (rquest, Chrome 131 emulation). Parses HTML, seeds the JS DOM, returns BlockMap inline. With `exec_scripts: true`, extracts inline AND external <script> tags from the parsed HTML, fetches externals in parallel (8s per-fetch timeout), eval's them in document order in QuickJS (with shims for setTimeout/fetch/etc.), then settles the event loop and fires DOMContentLoaded + load. `<script async>` is honored: async scripts execute after the sync queue. When `--policy=blocklist` is set, tracker URLs are blocked at script-fetch time (see scripts.policy_blocked in the result). Returns a `scripts` summary with inline_count, external_count, async_count, policy_blocked, executed, errors.\n\nAuto-extract: when the page embeds JSON-bearing <script> tags (density.json_scripts > 0 — covers application/json, application/ld+json, text/x-magento-init, text/x-shopify-app, etc.), navigate auto-runs `extract()` and returns the result as the `extract` field. Saves a round trip on the common case where the data the JS would have rendered is already sitting in the HTML — JSON-LD article schemas on news sites, __NEXT_DATA__ page state on Next.js apps, json_in_script product blobs on Magento/Shopify, GitHub RSC payloads, etc. Capped at 256 KB inline; over that limit `extract` returns a stub with strategy/confidence/size_bytes/hint and the agent should call `extract()` explicitly to retrieve the full payload. Pages with no embedded JSON get extract:null and pay zero extra cost.\n\nAuto-solve: Reddit's JS proof-of-work challenge (provider: reddit_js_challenge) is transparently solved — the challenge is detected, the GET solution URL is computed (solution = hex_value + hex_value), and the real page is returned in one navigate call. challenge:null on the result means the real page was served. Subsequent navigations in the same session carry the clearance cookie and skip the challenge entirely.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3160,8 +3146,8 @@ async fn dispatch_tool(session: &mut Session, name: &str, args: &Value) -> Resul
             let r = str_arg("ref").ok_or_else(|| anyhow!("missing 'ref'"))?;
             session.submit(r).await
         }
-        "body" => match &session.last_body {
-            Some(b) => Ok(Value::String(b.clone())),
+        "body" => match session.last_body.lock().ok().and_then(|g| g.clone()) {
+            Some(b) => Ok(Value::String(b)),
             None => Err(anyhow!("no body — call navigate first")),
         },
         "eval" => {
