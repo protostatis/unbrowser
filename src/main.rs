@@ -984,6 +984,13 @@ impl Session {
         let _ = self.eval(&format!("__setLocation({url_lit})"));
 
         // Phase 5: optionally execute page scripts (inline + external src).
+        // Per-decision accumulator for the synthetic outcome path (see
+        // derive_outcome below). Built up through the script-fetch and
+        // assembly passes; emitted as `outcome_for_decision` events after
+        // the navigate's success/fail verdict is computed. fetch_failed
+        // decisions are intentionally not recorded — that's a network
+        // failure, not a policy choice we want T2 to learn from.
+        let mut decisions: Vec<DecisionRecord> = Vec::new();
         let scripts = if exec_scripts && (200..400).contains(&status) {
             let items = collect_scripts(&tree, &final_url);
             let mut inline_count = 0usize;
@@ -1052,6 +1059,10 @@ impl Session {
                                     "matched": d.matched_pattern,
                                 }),
                             );
+                            decisions.push(DecisionRecord {
+                                action: "skip",
+                                host: host.clone(),
+                            });
                             policy_blocked_count += 1;
                             skipped_ids.insert(idx);
                             continue;
@@ -1161,6 +1172,16 @@ impl Session {
                                     decision["posterior_sampled"] = json!(s);
                                 }
                                 emit_event("script_decision", decision);
+                                // Record skip for synthetic outcome derivation.
+                                // We push only on the actual block path — when
+                                // the Bayesian gate lets the script through,
+                                // the queued/allow record is emitted by the
+                                // fetch path below, so T2 sees consistent
+                                // (decision_key, outcome) pairs.
+                                decisions.push(DecisionRecord {
+                                    action: "skip",
+                                    host: host.clone(),
+                                });
                                 policy_blocked_count += 1;
                                 skipped_ids.insert(idx);
                                 continue;
@@ -1273,6 +1294,10 @@ impl Session {
                                     "action": "queued",
                                 }),
                             );
+                            decisions.push(DecisionRecord {
+                                action: "queued",
+                                host: host.clone(),
+                            });
                             match kind {
                                 ScriptKind::Sync => {
                                     sync_sources.push((idx, kind_str, Some(url), body));
@@ -1648,6 +1673,67 @@ impl Session {
             serde_json::to_value(s.summary(5, network_store::NavScope::Only(&nav_id)))
                 .unwrap_or(Value::Null)
         });
+
+        // Synthetic outcome derivation. T2 (offline aggregator) needs an
+        // outcome stream — "did this navigate produce useful output?" — to
+        // fit Bayesian posteriors against. report_outcome RPC exists for
+        // drivers that care, but few drivers call it; deriving an outcome
+        // from the navigate result itself gives T2 a signal regardless.
+        //
+        // Fires AFTER policy_trace (and auto_extract / network_stores
+        // collection) so all the inputs are populated. Two events:
+        //   - outcome_derived (one per navigate): the verdict + reasons +
+        //     signals so the heuristic is debuggable.
+        //   - outcome_for_decision (one per script_decision in this nav):
+        //     pairs the per-decision key (block:<host> / allow:<host>)
+        //     with the navigate-level success bit, which is exactly what
+        //     T2 reads to update the corresponding posteriors.
+        //
+        // Pure derivation lives in derive_outcome() (testable, no I/O).
+        let scripts_for_outcome = scripts.clone().unwrap_or(Value::Null);
+        let extract_for_outcome = auto_extract.clone().unwrap_or(Value::Null);
+        let network_for_outcome = network_stores.clone().unwrap_or(Value::Null);
+        let challenge_for_outcome = challenge.clone().unwrap_or(Value::Null);
+        let (success, reasons, signals) = derive_outcome(
+            status,
+            exec_scripts,
+            &challenge_for_outcome,
+            &blockmap,
+            &extract_for_outcome,
+            &network_for_outcome,
+            &scripts_for_outcome,
+        );
+        emit_event(
+            "outcome_derived",
+            json!({
+                "schema_version": 1,
+                "navigation_id": nav_id,
+                "url": final_url,
+                "success": success,
+                "reasons": reasons,
+                "signals": signals,
+            }),
+        );
+        // Per-decision attribution: for every script_decision recorded
+        // during this navigate (skip / queued only — fetch_failed isn't a
+        // policy choice), emit a paired outcome_for_decision so T2 can
+        // bucket success/fail by `block:<host>` or `allow:<host>` keys.
+        // Hosts that didn't parse out of the URL drop silently — they
+        // can't be bucketed usefully.
+        for d in &decisions {
+            if let Some(key) = d.decision_key() {
+                emit_event(
+                    "outcome_for_decision",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "decision_key": key,
+                        "action": d.action,
+                        "success": success,
+                    }),
+                );
+            }
+        }
 
         Ok(json!({
             "navigation_id": nav_id,
@@ -2493,6 +2579,415 @@ fn script_kind_str(kind: ScriptKind) -> &'static str {
         ScriptKind::Sync => "sync",
         ScriptKind::Async => "async",
     }
+}
+
+// One per-script decision recorded during navigate_with. Accumulated so
+// that derive_outcome() can emit a paired `outcome_for_decision` event per
+// decision after the navigate's success/fail is determined. T2 (offline
+// aggregator) joins these to fit `block:<host>` / `allow:<host>` posteriors.
+//
+// Keep this minimal: we only need the policy-relevant key (skip vs queued
+// + host) plus the per-event action string for downstream filtering.
+#[derive(Debug, Clone)]
+struct DecisionRecord {
+    /// "skip" or "queued". "fetch_failed" decisions are not attributable to
+    /// a policy choice (the network failed, not us), so they're never
+    /// recorded here — the script_decision event still fires for visibility.
+    action: &'static str,
+    /// Lowercased host of the script URL. Empty on parse failure (URLs we
+    /// can't parse fall through with action skipped silently from the
+    /// outcome stream — they wouldn't bind to a useful key anyway).
+    host: String,
+}
+
+impl DecisionRecord {
+    /// Decision key under which T2 buckets posteriors. The two kinds we
+    /// emit today: `block:<host>` for any skip (blocklist or prefit_blocklist)
+    /// and `allow:<host>` for queued. Future kinds (api_stub, settle, ...)
+    /// will have their own prefixes (`stub:<api>`, `settle:<domain>`).
+    fn decision_key(&self) -> Option<String> {
+        if self.host.is_empty() {
+            return None;
+        }
+        match self.action {
+            "skip" => Some(format!("block:{}", self.host)),
+            "queued" => Some(format!("allow:{}", self.host)),
+            _ => None,
+        }
+    }
+}
+
+// === Synthetic outcome derivation ===
+//
+// After navigate completes, derive a binary success/failure verdict from
+// the result alone — no driver involvement required. The outcome stream
+// feeds T2's Bayesian posteriors over `block:<host>` etc. (see
+// docs/probabilistic-policy.md §4.5).
+//
+// The thresholds below are defaults; they will be tuned offline once we
+// have a labeled corpus. Document each one inline so the calibration
+// target is obvious in code review.
+
+/// Strong-success: extract object must have at least this many top-level
+/// keys to count as "non-trivial". 3 catches anything richer than a bare
+/// {error, hint} stub but admits compact JSON-LD pages (Article schema
+/// has ~6-10 keys).
+const EXTRACT_OBJECT_MIN_KEYS: usize = 3;
+
+/// Strong-success: blockmap must show at least this many semantic regions
+/// AND one of them must contain interactives. 3 reflects a minimum useful
+/// page shape (header + main + footer) — fewer means we got a thin shell
+/// or an error page that the body+title heuristic should handle instead.
+const BLOCKMAP_MIN_STRUCTURE: usize = 3;
+
+/// Strong-failure: if more than this fraction of executed-OR-attempted
+/// scripts hit the watchdog interrupt, the page is pathological (infinite
+/// loop in framework init, runaway hydration). 0.5 = "majority failed for
+/// the same reason" — this is the conservative threshold; a mild
+/// interrupt count (1 of 50) shouldn't sink the verdict.
+const SCRIPT_INTERRUPT_FAIL_RATIO: f64 = 0.5;
+
+/// Tie-breaker (weak heuristic): minimum heading count for a page with no
+/// other strong signals to still count as "got something". 1 heading is
+/// the floor — many landing pages are just a hero h1.
+const TIEBREAKER_MIN_HEADINGS: usize = 1;
+
+/// Tie-breaker (weak heuristic): minimum title length for a page with no
+/// other strong signals to count as "got something". 5 chars rules out
+/// the empty/single-letter titles that error pages and CDN holds emit
+/// while admitting normal page titles ("Home", "Login", "404"). The 404
+/// inclusion is intentional — we did successfully fetch *a* page.
+const TIEBREAKER_MIN_TITLE_LEN: usize = 5;
+
+/// Pure outcome derivation. Returns `(success, reasons, signals)`.
+///
+/// - `success`: the binary verdict T2 will train against.
+/// - `reasons`: human-readable strings describing which signals fired —
+///   surfaced in the NDJSON event so the heuristic is debuggable.
+/// - `signals`: a JSON object of the underlying inputs so we can
+///   re-derive offline if the heuristic changes (e.g., raise a threshold
+///   without re-running the whole corpus).
+///
+/// Pure: no I/O, no globals. Inputs are everything the navigate result
+/// computes; output is fully determined by inputs. Tests in this file
+/// exercise the full surface.
+fn derive_outcome(
+    status: u16,
+    exec_scripts: bool,
+    challenge: &Value,
+    blockmap: &Value,
+    extract: &Value,
+    network_stores: &Value,
+    scripts: &Value,
+) -> (bool, Vec<String>, Value) {
+    let mut reasons: Vec<String> = Vec::new();
+
+    // === Read signals out of the result. Tolerate missing/null fields —
+    // navigate emits Value::Null on the no-exec_scripts path, and we want
+    // derive_outcome to gracefully degrade rather than panic. ===
+
+    // Extract: present iff non-null, "non-trivial" iff object>=3 keys or
+    // array with at least one structured element.
+    let extract_present = !extract.is_null();
+    let extract_strategy = extract
+        .get("strategy")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let extract_data = extract.get("data");
+    let extract_nontrivial = match extract_data {
+        Some(Value::Object(m)) => m.len() >= EXTRACT_OBJECT_MIN_KEYS,
+        Some(Value::Array(a)) => a
+            .iter()
+            .any(|e| matches!(e, Value::Object(_) | Value::Array(_))),
+        _ => false,
+    };
+    // An extract object that's the truncated stub (data: null + truncated:
+    // true) still counts as a strong success — the strategy fired, the
+    // payload is just too big to inline. all_hits_summary or
+    // primary_truncated metadata indicates the same shape.
+    let extract_truncated = extract
+        .get("truncated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || extract.get("primary_truncated").is_some();
+
+    // Blockmap: structure count + total interactives across the structure.
+    // Iterate over an empty slice on missing/malformed structure rather than
+    // bind a temp `Vec<Value>` (E0716 — const can't back a `&Vec` borrow
+    // that outlives the expression). [Value] is the right shape here anyway.
+    let empty_slice: &[Value] = &[];
+    let blockmap_structure: &[Value] = blockmap
+        .get("structure")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(empty_slice);
+    let blockmap_structure_count = blockmap_structure.len();
+    let mut blockmap_interactives_total: u64 = 0;
+    let mut blockmap_any_interactive = false;
+    for s in blockmap_structure {
+        if let Some(c) = s.get("counts") {
+            let links = c.get("links").and_then(|v| v.as_u64()).unwrap_or(0);
+            let buttons = c.get("buttons").and_then(|v| v.as_u64()).unwrap_or(0);
+            let inputs = c.get("inputs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sum = links + buttons + inputs;
+            blockmap_interactives_total += sum;
+            if sum > 0 {
+                blockmap_any_interactive = true;
+            }
+        }
+    }
+    let blockmap_headings_count = blockmap
+        .get("headings")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let blockmap_title_len = blockmap
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().chars().count())
+        .unwrap_or(0);
+
+    // Network stores: number of content-bearing responses captured.
+    let network_capture_count = network_stores
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Scripts dict (null on the no-exec path).
+    let scripts_inline = scripts
+        .get("inline_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let scripts_external = scripts
+        .get("external_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let scripts_executed = scripts
+        .get("executed")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let scripts_interrupted = scripts
+        .get("interrupted")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let scripts_total = scripts_inline + scripts_external;
+
+    let challenge_present = !challenge.is_null();
+    let challenge_provider = challenge
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // === Strong-failure short-circuits (any one fails the navigate). ===
+
+    if challenge_present {
+        let prov = challenge_provider.clone().unwrap_or_else(|| "?".to_string());
+        reasons.push(format!("challenge:{prov}"));
+        return (
+            false,
+            reasons,
+            build_signals(
+                extract_present,
+                extract_strategy,
+                blockmap_structure_count,
+                blockmap_interactives_total,
+                network_capture_count,
+                challenge_provider,
+                scripts_executed,
+                scripts_interrupted,
+                scripts_total,
+            ),
+        );
+    }
+
+    if !(200..400).contains(&status) {
+        reasons.push(format!("status:{status}"));
+        return (
+            false,
+            reasons,
+            build_signals(
+                extract_present,
+                extract_strategy,
+                blockmap_structure_count,
+                blockmap_interactives_total,
+                network_capture_count,
+                challenge_provider,
+                scripts_executed,
+                scripts_interrupted,
+                scripts_total,
+            ),
+        );
+    }
+
+    // The two script-pathology checks only apply when scripts were actually
+    // attempted. exec_scripts=false leaves scripts == null and these
+    // signals don't contribute either way.
+    if exec_scripts && !scripts.is_null() {
+        if scripts_executed == 0 && scripts_total > 0 {
+            reasons.push(format!(
+                "scripts_all_failed:{scripts_total}_attempted_0_executed"
+            ));
+            return (
+                false,
+                reasons,
+                build_signals(
+                    extract_present,
+                    extract_strategy,
+                    blockmap_structure_count,
+                    blockmap_interactives_total,
+                    network_capture_count,
+                    challenge_provider,
+                    scripts_executed,
+                    scripts_interrupted,
+                    scripts_total,
+                ),
+            );
+        }
+        // "majority interrupted" requires at least one execution to compute
+        // a ratio; the all-failed branch above already covers the zero case.
+        if scripts_executed > 0
+            && (scripts_interrupted as f64) > (scripts_executed as f64) * SCRIPT_INTERRUPT_FAIL_RATIO
+        {
+            reasons.push(format!(
+                "scripts_pathological:{scripts_interrupted}_of_{scripts_executed}_interrupted"
+            ));
+            return (
+                false,
+                reasons,
+                build_signals(
+                    extract_present,
+                    extract_strategy,
+                    blockmap_structure_count,
+                    blockmap_interactives_total,
+                    network_capture_count,
+                    challenge_provider,
+                    scripts_executed,
+                    scripts_interrupted,
+                    scripts_total,
+                ),
+            );
+        }
+    }
+
+    // === Strong-success signals (any one passes). ===
+
+    if extract_present && (extract_nontrivial || extract_truncated) {
+        let strat = extract_strategy.clone().unwrap_or_else(|| "?".to_string());
+        let count = match extract_data {
+            Some(Value::Object(m)) => m.len(),
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        };
+        let suffix = if extract_truncated && !extract_nontrivial {
+            "_truncated".to_string()
+        } else {
+            format!("_with_{count}_entries")
+        };
+        reasons.push(format!("extract:{strat}{suffix}"));
+    }
+
+    if blockmap_structure_count >= BLOCKMAP_MIN_STRUCTURE && blockmap_any_interactive {
+        reasons.push(format!(
+            "blockmap:{blockmap_structure_count}_structure_{blockmap_interactives_total}_interactives"
+        ));
+    }
+
+    if network_capture_count > 0 {
+        reasons.push(format!("network_stores:{network_capture_count}_captures"));
+    }
+
+    if !reasons.is_empty() {
+        return (
+            true,
+            reasons,
+            build_signals(
+                extract_present,
+                extract_strategy,
+                blockmap_structure_count,
+                blockmap_interactives_total,
+                network_capture_count,
+                challenge_provider,
+                scripts_executed,
+                scripts_interrupted,
+                scripts_total,
+            ),
+        );
+    }
+
+    // === Tie-breaker (weak heuristic). ===
+    // No strong signals fired. Fall back to "did we get *any* page": at
+    // least one heading OR a non-trivial title. Documented as weak so
+    // anyone reading the trace knows the verdict is low-confidence.
+    if blockmap_headings_count >= TIEBREAKER_MIN_HEADINGS
+        || blockmap_title_len >= TIEBREAKER_MIN_TITLE_LEN
+    {
+        if blockmap_headings_count >= TIEBREAKER_MIN_HEADINGS {
+            reasons.push(format!(
+                "title_only:{blockmap_headings_count}_headings_weak"
+            ));
+        } else {
+            reasons.push(format!(
+                "title_only:{blockmap_title_len}char_title_weak"
+            ));
+        }
+        return (
+            true,
+            reasons,
+            build_signals(
+                extract_present,
+                extract_strategy,
+                blockmap_structure_count,
+                blockmap_interactives_total,
+                network_capture_count,
+                challenge_provider,
+                scripts_executed,
+                scripts_interrupted,
+                scripts_total,
+            ),
+        );
+    }
+
+    reasons.push("no_signal".to_string());
+    (
+        false,
+        reasons,
+        build_signals(
+            extract_present,
+            extract_strategy,
+            blockmap_structure_count,
+            blockmap_interactives_total,
+            network_capture_count,
+            challenge_provider,
+            scripts_executed,
+            scripts_interrupted,
+            scripts_total,
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_signals(
+    extract_present: bool,
+    extract_strategy: Option<String>,
+    blockmap_structure_count: usize,
+    blockmap_interactives_total: u64,
+    network_capture_count: u64,
+    challenge_provider: Option<String>,
+    scripts_executed: u64,
+    scripts_interrupted: u64,
+    scripts_total: u64,
+) -> Value {
+    json!({
+        "extract_present": extract_present,
+        "extract_strategy": extract_strategy,
+        "blockmap_structure_count": blockmap_structure_count,
+        "blockmap_interactives_total": blockmap_interactives_total,
+        "network_capture_count": network_capture_count,
+        "challenge": challenge_provider,
+        "scripts_executed": scripts_executed,
+        "scripts_interrupted": scripts_interrupted,
+        "scripts_total": scripts_total,
+    })
 }
 
 // Phase A: validated outcome reporting. Shared between rpc_main and
@@ -3392,4 +3887,340 @@ async fn mcp_main(profile: Profile) -> Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    //! Tests for `derive_outcome` (synthetic outcome derivation).
+    //!
+    //! Each test feeds a hand-built navigate-result fragment and asserts
+    //! the derived (success, reasons) verdict. The function is pure so
+    //! these don't need a session, runtime, or QuickJS.
+
+    use super::{
+        BLOCKMAP_MIN_STRUCTURE, EXTRACT_OBJECT_MIN_KEYS, TIEBREAKER_MIN_TITLE_LEN, derive_outcome,
+    };
+    use serde_json::{Value, json};
+
+    fn empty_blockmap() -> Value {
+        json!({
+            "title": "",
+            "structure": [],
+            "headings": [],
+            "interactives": { "links": 0, "buttons": 0, "inputs": [], "forms": [] },
+        })
+    }
+
+    #[test]
+    fn derive_outcome_extracts_pass() {
+        // JSON-LD strategy returned 4-key object — strong success.
+        let extract = json!({
+            "strategy": "json_ld",
+            "confidence": 0.95,
+            "data": {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Markets close mixed",
+                "datePublished": "2026-05-02",
+            },
+        });
+        let (success, reasons, signals) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &empty_blockmap(),
+            &extract,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(success, "extract with 4 keys should pass");
+        assert!(
+            reasons.iter().any(|r| r.starts_with("extract:")),
+            "reasons should include extract:..., got {reasons:?}"
+        );
+        assert_eq!(signals.get("extract_present").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            signals.get("extract_strategy").and_then(|v| v.as_str()),
+            Some("json_ld")
+        );
+        // Sanity check: the threshold the test pivots on hasn't drifted.
+        assert!(EXTRACT_OBJECT_MIN_KEYS <= 4);
+    }
+
+    #[test]
+    fn derive_outcome_blocked_by_challenge() {
+        let challenge = json!({
+            "blocked": true,
+            "provider": "perimeterx_block",
+            "confidence": 0.95,
+            "status": 403,
+        });
+        // Status is also non-2xx but challenge takes precedence in reasons.
+        let (success, reasons, signals) = derive_outcome(
+            403,
+            true,
+            &challenge,
+            &empty_blockmap(),
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(!success, "challenge should fail the navigate");
+        assert!(
+            reasons.iter().any(|r| r.starts_with("challenge:")),
+            "reasons should include challenge:..., got {reasons:?}"
+        );
+        assert_eq!(
+            signals.get("challenge").and_then(|v| v.as_str()),
+            Some("perimeterx_block")
+        );
+    }
+
+    #[test]
+    fn derive_outcome_all_scripts_failed() {
+        // 5 scripts attempted (3 inline + 2 external), 0 executed → fail.
+        // No challenge, status 200 — only the script-pathology check fires.
+        let scripts = json!({
+            "inline_count": 3,
+            "external_count": 2,
+            "executed": 0,
+            "interrupted": 0,
+        });
+        let (success, reasons, signals) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &empty_blockmap(),
+            &Value::Null,
+            &Value::Null,
+            &scripts,
+        );
+        assert!(
+            !success,
+            "0 executed of 5 attempted should fail the navigate"
+        );
+        assert!(
+            reasons.iter().any(|r| r.starts_with("scripts_all_failed:")),
+            "reasons should include scripts_all_failed:..., got {reasons:?}"
+        );
+        assert_eq!(signals.get("scripts_total").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[test]
+    fn derive_outcome_thin_shell_with_title() {
+        // No extract, no structure, no network captures, status OK,
+        // exec_scripts off — but blockmap has a title. Tie-breaker fires
+        // and we count this as a (weak) success.
+        let blockmap = json!({
+            "title": "Sign in to Example",
+            "structure": [],
+            "headings": [],
+            "interactives": { "links": 0, "buttons": 0, "inputs": [], "forms": [] },
+        });
+        let (success, reasons, _signals) = derive_outcome(
+            200,
+            false,
+            &Value::Null,
+            &blockmap,
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(success, "title-only page should weak-pass via tie-breaker");
+        assert!(
+            reasons.iter().any(|r| r.starts_with("title_only:")),
+            "reasons should include title_only:..., got {reasons:?}"
+        );
+        // Threshold sanity-check.
+        assert!("Sign in to Example".len() >= TIEBREAKER_MIN_TITLE_LEN);
+    }
+
+    // === Additional coverage beyond the four required tests ===
+
+    #[test]
+    fn derive_outcome_blockmap_with_interactives_passes() {
+        // 3 structure entries, total interactives > 0, no extract / network.
+        let blockmap = json!({
+            "title": "Hacker News",
+            "structure": [
+                {"role": "header", "ref": "e:1", "counts": {"links": 5, "buttons": 0, "inputs": 1}},
+                {"role": "main", "ref": "e:2", "counts": {"links": 100, "buttons": 0, "inputs": 0}},
+                {"role": "footer", "ref": "e:3", "counts": {"links": 8, "buttons": 0, "inputs": 0}},
+            ],
+            "headings": [],
+        });
+        let (success, reasons, signals) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &blockmap,
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(success);
+        assert!(reasons.iter().any(|r| r.starts_with("blockmap:")));
+        assert_eq!(
+            signals
+                .get("blockmap_structure_count")
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert!(BLOCKMAP_MIN_STRUCTURE <= 3);
+    }
+
+    #[test]
+    fn derive_outcome_network_capture_passes() {
+        let network = json!({"count": 2, "total_bytes": 12345, "top": []});
+        let (success, reasons, signals) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &empty_blockmap(),
+            &Value::Null,
+            &network,
+            &Value::Null,
+        );
+        assert!(success);
+        assert!(reasons.iter().any(|r| r.starts_with("network_stores:")));
+        assert_eq!(
+            signals.get("network_capture_count").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn derive_outcome_404_fails() {
+        let (success, reasons, _) = derive_outcome(
+            404,
+            true,
+            &Value::Null,
+            &empty_blockmap(),
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(!success);
+        assert!(reasons.iter().any(|r| r.starts_with("status:404")));
+    }
+
+    #[test]
+    fn derive_outcome_no_signal_fails() {
+        // 200, no extract, no structure, no captures, no headings, no title.
+        let (success, reasons, _) = derive_outcome(
+            200,
+            false,
+            &Value::Null,
+            &empty_blockmap(),
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(!success);
+        assert!(reasons.iter().any(|r| r == "no_signal"));
+    }
+
+    #[test]
+    fn derive_outcome_truncated_extract_passes() {
+        // Extract result was so big it got the truncated stub. Strategy
+        // fired — that's a success even though data is null.
+        let extract = json!({
+            "strategy": "next_data",
+            "confidence": 0.9,
+            "data": null,
+            "truncated": true,
+            "size_bytes": 800000,
+        });
+        let (success, reasons, _) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &empty_blockmap(),
+            &extract,
+            &Value::Null,
+            &Value::Null,
+        );
+        assert!(success);
+        assert!(reasons.iter().any(|r| r.starts_with("extract:next_data")));
+    }
+
+    #[test]
+    fn derive_outcome_majority_interrupted_fails() {
+        // 6 of 10 scripts hit the watchdog → pathological page.
+        let scripts = json!({
+            "inline_count": 5,
+            "external_count": 5,
+            "executed": 10,
+            "interrupted": 6,
+        });
+        // Even with a usable blockmap, the script-pathology check fires
+        // first as a strong-failure signal.
+        let blockmap = json!({
+            "title": "Some site",
+            "structure": [
+                {"role": "header", "ref": "e:1", "counts": {"links": 5, "buttons": 0, "inputs": 0}},
+                {"role": "main", "ref": "e:2", "counts": {"links": 10, "buttons": 0, "inputs": 0}},
+                {"role": "footer", "ref": "e:3", "counts": {"links": 3, "buttons": 0, "inputs": 0}},
+            ],
+            "headings": [],
+        });
+        let (success, reasons, _) = derive_outcome(
+            200,
+            true,
+            &Value::Null,
+            &blockmap,
+            &Value::Null,
+            &Value::Null,
+            &scripts,
+        );
+        assert!(!success);
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.starts_with("scripts_pathological:"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod decision_record_tests {
+    use super::DecisionRecord;
+
+    #[test]
+    fn skip_action_yields_block_key() {
+        let d = DecisionRecord {
+            action: "skip",
+            host: "zephr-templates.cnbc.com".to_string(),
+        };
+        assert_eq!(d.decision_key().as_deref(), Some("block:zephr-templates.cnbc.com"));
+    }
+
+    #[test]
+    fn queued_action_yields_allow_key() {
+        let d = DecisionRecord {
+            action: "queued",
+            host: "i.cnbc.com".to_string(),
+        };
+        assert_eq!(d.decision_key().as_deref(), Some("allow:i.cnbc.com"));
+    }
+
+    #[test]
+    fn empty_host_drops_key() {
+        let d = DecisionRecord {
+            action: "skip",
+            host: String::new(),
+        };
+        assert!(d.decision_key().is_none());
+    }
+
+    #[test]
+    fn unknown_action_drops_key() {
+        // fetch_failed and any other action should not produce a key —
+        // they're not policy choices T2 should bucket on.
+        let d = DecisionRecord {
+            action: "fetch_failed",
+            host: "cdn.example.com".to_string(),
+        };
+        assert!(d.decision_key().is_none());
+    }
 }
