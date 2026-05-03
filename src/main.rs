@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 mod bytecode_cache;
+mod challenge;
 mod network_store;
 mod policy;
 mod prefit;
@@ -565,15 +566,14 @@ impl Session {
             // elements (Next.js App Router does this after hydrating; the
             // raw body still contains the RSC chunks).
             let body_for_host = last_body_arc.clone();
-            let host_raw_body =
-                rquickjs::Function::new(ctx.clone(), move || -> String {
-                    body_for_host
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.clone())
-                        .unwrap_or_default()
-                })
-                .map_err(|e| anyhow!("install __host_raw_body: {e}"))?;
+            let host_raw_body = rquickjs::Function::new(ctx.clone(), move || -> String {
+                body_for_host
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .unwrap_or_default()
+            })
+            .map_err(|e| anyhow!("install __host_raw_body: {e}"))?;
             ctx.globals()
                 .set("__host_raw_body", host_raw_body)
                 .map_err(|e| anyhow!("set __host_raw_body: {e}"))?;
@@ -908,26 +908,23 @@ impl Session {
             );
         }
 
-        let challenge = detect_challenge(status, &body);
-        if let Some(c) = &challenge {
-            emit_event("challenge", c.clone());
-            // Reddit JS challenge: pure GET proof-of-work — auto-solvable without
-            // real Chrome. Solve, re-navigate, and return the real page result.
-            if c["provider"] == "reddit_js_challenge" {
-                if let Some(solution_url) = parse_reddit_js_challenge_url(&body, &final_url) {
-                    emit_event(
-                        "challenge_auto_solved",
-                        json!({
-                            "schema_version": 1,
-                            "navigation_id": nav_id,
-                            "provider": "reddit_js_challenge",
-                            "solution_url": solution_url,
-                        }),
-                    );
-                    return Box::pin(self.navigate(&solution_url, exec_scripts)).await;
-                }
+        let challenge_detection = challenge::detect(status, &body);
+        if let Some(d) = &challenge_detection {
+            emit_event("challenge", serde_json::to_value(d).unwrap_or_default());
+            if let Some(solution_url) = challenge::solve_url(d, &body, &final_url) {
+                emit_event(
+                    "challenge_auto_solved",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "provider": d.provider,
+                        "solution_url": solution_url,
+                    }),
+                );
+                return Box::pin(self.navigate(&solution_url, exec_scripts)).await;
             }
         }
+        let challenge = challenge_detection.map(|d| serde_json::to_value(d).unwrap_or_default());
 
         let tree = parse_html_to_tree(&body);
         self.seed_dom(&tree)?;
@@ -1466,8 +1463,7 @@ impl Session {
                         // ~750KB; json_ld (20KB, conf 0.95) fits and carries
                         // the markets list. Agent can call extract() for the
                         // full primary if they want.
-                        let primary_strategy =
-                            v.get("strategy").cloned().unwrap_or(Value::Null);
+                        let primary_strategy = v.get("strategy").cloned().unwrap_or(Value::Null);
                         let primary_confidence =
                             v.get("confidence").cloned().unwrap_or(Value::Null);
                         let mut chosen: Option<Value> = None;
@@ -1500,7 +1496,10 @@ impl Session {
                                                 "size_bytes": s,
                                             }))
                                         }).collect();
-                                        map.insert("all_hits_summary".into(), Value::Array(summary));
+                                        map.insert(
+                                            "all_hits_summary".into(),
+                                            Value::Array(summary),
+                                        );
                                     }
                                     chosen = Some(sub);
                                     break;
@@ -2130,309 +2129,6 @@ fn format_js_exception(ex: rquickjs::Value) -> String {
         return s;
     }
     "<unknown JS exception>".to_string()
-}
-
-// Reddit JS proof-of-work challenge solver.
-//
-// Reddit serves a small challenge page when it suspects automation. The page
-// contains one inline <script> with a trivial proof-of-work:
-//
-//   await(async e=>e+e)("HEXVALUE")  →  solution = HEXVALUE + HEXVALUE
-//
-// The solution is submitted as a GET query param back to the original URL along
-// with a per-request token. This is solvable deterministically without a real
-// browser — we just parse the HTML, compute, and re-navigate.
-//
-// Returns the fully-resolved solution URL, or None if the body doesn't look
-// like Reddit's JS challenge.
-fn parse_reddit_js_challenge_url(body: &str, current_url: &str) -> Option<String> {
-    // Detect the specific JS proof-of-work marker.
-    const SCRIPT_MARKER: &str = "await(async e=>e+e)(\"";
-    let script_pos = body.find(SCRIPT_MARKER)?;
-    let after_quote = &body[script_pos + SCRIPT_MARKER.len()..];
-    let val_end = after_quote.find('"')?;
-    let challenge_value = &after_quote[..val_end];
-
-    // Sanity: must be a non-empty hex string of reasonable length.
-    if challenge_value.is_empty()
-        || challenge_value.len() > 64
-        || !challenge_value.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    let solution = format!("{0}{0}", challenge_value);
-
-    // Parse form action — expect: <form hidden method="GET" action="/path/">
-    // Attribute order in the HTML is fixed, but scan for action= anywhere in
-    // the first <form tag to be tolerant of minor formatting changes.
-    let form_start = body.find("<form ")?;
-    let form_tag_end = body[form_start..].find('>')?;
-    let form_tag = &body[form_start..form_start + form_tag_end];
-    let action = extract_attr(form_tag, "action")?;
-
-    // Resolve relative action against the current page URL.
-    let base = url::Url::parse(current_url).ok()?;
-    let mut target = base.join(&action).ok()?;
-
-    // Build query string from hidden form fields + computed solution.
-    // Ordering matches what a real browser would send.
-    {
-        let mut qp = target.query_pairs_mut();
-        qp.append_pair("solution", &solution);
-        qp.append_pair("js_challenge", "1");
-        if let Some(token) = extract_hidden_input(body, "token") {
-            qp.append_pair("token", &token);
-        }
-        // jsc_orig_r carries any query params that were on the original URL before
-        // the challenge redirect; use whatever the form says (often empty).
-        let orig_r = extract_hidden_input(body, "jsc_orig_r").unwrap_or_default();
-        qp.append_pair("jsc_orig_r", &orig_r);
-    }
-    Some(target.to_string())
-}
-
-// Extract the value of an HTML attribute from a tag string (e.g. the text
-// between `<form` and `>`). Handles both single- and double-quoted values.
-fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    let needle_dq = format!(r#"{}=""#, name);
-    let needle_sq = format!("{}='", name);
-    if let Some(pos) = tag.find(&needle_dq) {
-        let rest = &tag[pos + needle_dq.len()..];
-        let end = rest.find('"')?;
-        return Some(rest[..end].to_string());
-    }
-    if let Some(pos) = tag.find(&needle_sq) {
-        let rest = &tag[pos + needle_sq.len()..];
-        let end = rest.find('\'')?;
-        return Some(rest[..end].to_string());
-    }
-    None
-}
-
-// Find a hidden <input name="NAME" value="..."> in the HTML and return its value.
-// Handles both `name` before `value` and `value` before `name` attribute order.
-fn extract_hidden_input(body: &str, name: &str) -> Option<String> {
-    let name_needle = format!(r#"name="{}""#, name);
-    let pos = body.find(&name_needle)?;
-    // Scan backwards to the opening `<input` for this tag.
-    let tag_start = body[..pos].rfind("<input")?;
-    // Scan forward to the closing `>`.
-    let tag_end = body[pos..].find('>')?;
-    let tag = &body[tag_start..pos + tag_end];
-    extract_attr(tag, "value")
-}
-
-// Anti-bot challenge detector. Aligned with private-core's
-// challenge_detection.py: vendor names, confidence scores, "matched" patterns.
-// Adds two fields private-core doesn't carry yet (clearance_cookie hint, status)
-// so a router downstream can decide WHICH cookie to extract on escalation.
-//
-// Returns the *highest-confidence* match, not the first. Returns None on the
-// happy path (no signatures matched).
-fn detect_challenge(status: u16, body: &str) -> Option<Value> {
-    // Cheap early-out: very large 2xx responses are almost certainly real
-    // content (article pages, marketplace results). Real challenge pages are
-    // typically under 50KB; the 80KB threshold buys headroom while still
-    // catching cases like eBay's "Pardon Our Interruption" interstitial
-    // (200 + 13KB, would be missed by an 8KB threshold).
-    if (200..300).contains(&status) && body.len() > 80_000 {
-        return None;
-    }
-    let lower = body.to_lowercase();
-
-    // (vendor, confidence, &[lowercase substrings to match], clearance_cookie_hint)
-    // Patterns are case-insensitive (we lowercase the body once). Substring match,
-    // not regex — we don't pull in a regex crate just for this.
-    type Group = (&'static str, f64, &'static [&'static str], &'static str);
-    let groups: &[Group] = &[
-        ("arkose_labs", 0.98, &["arkoselabs", "funcaptcha"], ""),
-        (
-            "cloudflare_turnstile",
-            0.97,
-            &[
-                "just a moment",
-                "checking your browser",
-                // Newer wording (post-2024 Turnstile/managed challenge):
-                "verifying you are human",
-                "needs to review the security of your connection",
-                "performance & security by cloudflare",
-                "cf-challenge",
-                "cf_challenge",
-                "turnstile",
-                "__cf_chl_",
-                "cf-mitigated",
-            ],
-            "cf_clearance",
-        ),
-        (
-            "aws_waf",
-            0.96,
-            &[
-                "awswafcookiedomainlist",
-                "gokuprops",
-                "aws-waf-token",
-                "/awswaf/",
-                "challenge.js",
-            ],
-            "aws-waf-token",
-        ),
-        (
-            "recaptcha",
-            0.95,
-            &[
-                "g-recaptcha",
-                "google recaptcha",
-                "recaptcha/api2",
-                "i'm not a robot",
-                "im not a robot",
-            ],
-            "",
-        ),
-        (
-            "perimeterx_block",
-            0.94,
-            &[
-                "px-captcha",
-                "_pxappid",
-                "/_px",
-                "robot or human",
-                "/blocked?url=",
-            ],
-            "_px3",
-        ),
-        (
-            "datadome",
-            0.93,
-            &["datadome", "captcha-delivery"],
-            "datadome",
-        ),
-        (
-            "press_hold",
-            0.92,
-            &[
-                "press & hold",
-                "press and hold",
-                "press&hold",
-                "hold to confirm",
-            ],
-            "",
-        ),
-        (
-            "yahoo_sad_panda",
-            0.90,
-            &[
-                "sad-panda",
-                "sorry, the page you requested cannot be found",
-                "yahoo.*nytransit",
-            ],
-            "",
-        ),
-        (
-            "akamai_bmp",
-            0.88,
-            &["_abck=", "bm_sz=", "akamai bot manager"],
-            "_abck",
-        ),
-        (
-            "imperva",
-            0.85,
-            &["_incapsula", "incident_id"],
-            "incap_ses_*",
-        ),
-        // "Pardon Our Interruption" / "Are you a robot" interstitials —
-        // typically status 200 + small body + a friendly title. eBay,
-        // Distil Networks-class, some Imperva deployments. Confidence set
-        // above cloudflare_turnstile (0.97) because these phrases are MORE
-        // specific than "checking your browser" / "just a moment" — eBay's
-        // Distil page contains both, and we want the specific match to win.
-        (
-            "interstitial",
-            0.99,
-            &[
-                "pardon our interruption",
-                "are you a robot",
-                "are you a human",
-                "automated access has been blocked",
-                "your browser has been flagged",
-                "as you were browsing",
-            ],
-            "",
-        ),
-        // Reddit's own JS proof-of-work challenge — solvable without real Chrome.
-        // Detected by its unique inline script marker; higher confidence than
-        // generic_human_verification so it wins when both patterns would fire.
-        (
-            "reddit_js_challenge",
-            0.95,
-            &["await(async e=>e+e)(\""],
-            "",
-        ),
-        (
-            "generic_human_verification",
-            0.76,
-            &[
-                "verify you are human",
-                "verify that you are human",
-                "verify that you're human",
-                "please wait for verification",
-                "please wait while we verify",
-                "unusual traffic",
-                "access to this page has been denied",
-                "access denied",
-                "automated requests",
-                "sorry, you have been blocked",
-                "you are being rate limited",
-            ],
-            "",
-        ),
-    ];
-
-    let mut best: Option<(&'static str, f64, &'static str, Vec<&'static str>)> = None;
-    for (vendor, confidence, patterns, cookie) in groups {
-        let matches: Vec<&'static str> = patterns
-            .iter()
-            .copied()
-            .filter(|p| lower.contains(*p))
-            .collect();
-        if !matches.is_empty() && best.as_ref().is_none_or(|(_, c, _, _)| *confidence > *c) {
-            best = Some((*vendor, *confidence, *cookie, matches));
-        }
-    }
-
-    // Fallback: tiny-body + status anomaly = soft block from an unknown vendor.
-    // Conservative thresholds so legitimate small 4xx pages on real sites don't trip it:
-    //   - 4xx/5xx OR an unusual 2xx status like 202 (used by AWS WAF)
-    //   - body shorter than 5KB (real error pages are usually fuller)
-    //   - no specific signature already matched
-    if best.is_none() {
-        let anomalous_status = !matches!(status, 200 | 301 | 302 | 304 | 404 | 410)
-            && (status >= 400 || status == 202 || status == 401 || status == 403);
-        if anomalous_status && body.len() < 5000 {
-            return Some(json!({
-                "blocked": true,
-                "provider": "unknown_block",
-                "confidence": 0.55,
-                "status": status,
-                "matched": [],
-                "clearance_cookie": Value::Null,
-                "reason": format!("Tiny body ({} bytes) on anomalous status {} with no known vendor signature — likely a soft block.", body.len(), status),
-                "hint": "Inspect `body` to identify the vendor, escalate to real Chrome to confirm the page renders, or skip this URL.",
-            }));
-        }
-    }
-
-    best.map(|(vendor, confidence, cookie, matches)| {
-        json!({
-            "blocked": true,
-            "provider": vendor,
-            "confidence": confidence,
-            "status": status,
-            "matched": matches,
-            "clearance_cookie": if cookie.is_empty() { Value::Null } else { Value::String(cookie.to_string()) },
-            "reason": format!("Matched {vendor} challenge signatures."),
-            "hint": "Solve once in real Chrome (or via unchainedsky CLI), copy the clearance cookie via DevTools, paste with cookies_set, then retry navigate. Cookie typically lasts 30 min – 24 h.",
-        })
-    })
 }
 
 // One <script> element from a parsed page.
@@ -3609,66 +3305,4 @@ async fn mcp_main(profile: Profile) -> Result<()> {
         out.flush()?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const REDDIT_CHALLENGE_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-  <head><title>Reddit - Please wait for verification</title>
-    <script nonce="test-nonce">
-      document.addEventListener("DOMContentLoaded",async function(){var e=document.forms[0],n=(e.onsubmit=function(t){return!0},await(async e=>e+e)("a5be06c2a2c9c99d"));e.elements.namedItem("solution").value=n,e.requestSubmit()},{once:!0});
-    </script>
-  </head>
-  <body>
-    <form hidden method="GET" action="/r/programming/">
-      <input type="hidden" name="solution" />
-      <input type="hidden" name="js_challenge" value="1"/>
-      <input type="hidden" name="token" value="deadbeef1234"/>
-      <input type="hidden" name="jsc_orig_r" value=""/>
-    </form>
-  </body>
-</html>"#;
-
-    #[test]
-    fn test_parse_reddit_js_challenge_basic() {
-        let url =
-            parse_reddit_js_challenge_url(REDDIT_CHALLENGE_HTML, "https://www.reddit.com/r/programming/");
-        assert!(url.is_some(), "should parse the challenge");
-        let url = url.unwrap();
-        assert!(url.contains("solution=a5be06c2a2c9c99da5be06c2a2c9c99d"), "solution should be doubled: {url}");
-        assert!(url.contains("js_challenge=1"), "must include js_challenge flag: {url}");
-        assert!(url.contains("token=deadbeef1234"), "must include token: {url}");
-        assert!(url.starts_with("https://www.reddit.com/r/programming/"), "must resolve relative action: {url}");
-    }
-
-    #[test]
-    fn test_parse_reddit_js_challenge_no_match() {
-        assert!(parse_reddit_js_challenge_url("<html><body>Normal page</body></html>", "https://example.com/").is_none());
-    }
-
-    #[test]
-    fn test_extract_attr_double_quoted() {
-        let tag = r#"<form hidden method="GET" action="/r/foo/">"#;
-        assert_eq!(extract_attr(tag, "action"), Some("/r/foo/".to_string()));
-        assert_eq!(extract_attr(tag, "method"), Some("GET".to_string()));
-    }
-
-    #[test]
-    fn test_extract_hidden_input() {
-        let body = r#"<form><input type="hidden" name="token" value="abc123"/></form>"#;
-        assert_eq!(extract_hidden_input(body, "token"), Some("abc123".to_string()));
-        assert_eq!(extract_hidden_input(body, "missing"), None);
-    }
-
-    #[test]
-    fn test_detect_challenge_reddit() {
-        let result = detect_challenge(200, REDDIT_CHALLENGE_HTML);
-        assert!(result.is_some());
-        let r = result.unwrap();
-        assert_eq!(r["provider"], "reddit_js_challenge");
-        assert!(r["confidence"].as_f64().unwrap() > 0.9);
-    }
 }
