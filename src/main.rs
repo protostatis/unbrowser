@@ -911,6 +911,22 @@ impl Session {
         let challenge = detect_challenge(status, &body);
         if let Some(c) = &challenge {
             emit_event("challenge", c.clone());
+            // Reddit JS challenge: pure GET proof-of-work — auto-solvable without
+            // real Chrome. Solve, re-navigate, and return the real page result.
+            if c["provider"] == "reddit_js_challenge" {
+                if let Some(solution_url) = parse_reddit_js_challenge_url(&body, &final_url) {
+                    emit_event(
+                        "challenge_auto_solved",
+                        json!({
+                            "schema_version": 1,
+                            "navigation_id": nav_id,
+                            "provider": "reddit_js_challenge",
+                            "solution_url": solution_url,
+                        }),
+                    );
+                    return self.navigate(&solution_url, exec_scripts).await;
+                }
+            }
         }
 
         let tree = parse_html_to_tree(&body);
@@ -1598,6 +1614,15 @@ impl Session {
         let mut total_microtasks: u64 = 0;
         let mut total_timers: u64 = 0;
         let mut total_fetches: u64 = 0;
+        // Polling-detection: when a setInterval keeps firing but its
+        // callback produces no microtasks and no new fetches, that's
+        // live-polling (price ticker, animation frame, debounce timer).
+        // It will never go idle. Count consecutive iters of "timers fired
+        // but nothing else happened" — bail after 3 in a row to save the
+        // remaining settle budget for pages that legitimately need it.
+        // Polymarket's after_dcl/after_load both burned the full 2s+1.5s
+        // budget firing live-price intervals before this check existed.
+        let mut polling_iters: u32 = 0;
 
         // Why settle exited. "idle" is the success case (all queues drained);
         // the others mean we hit a budget. Drivers can use this to pick a
@@ -1669,6 +1694,29 @@ impl Session {
                 break; // queue fully empty — the success case
             }
 
+            // Polling detection. The streak counts iters where no useful
+            // work happened (no microtasks ran, no fetches resolved) but
+            // timers either fired without consequence OR are pending. It
+            // resets only when something productive happens.
+            //
+            // Note that the loop alternates "timer fires" iters and "sleep
+            // until next deadline" iters, so we can't gate this on
+            // `fired > 0` — that would reset every sleep iter and never
+            // accumulate. After 3 streak iters with no useful work and
+            // no pending fetches/microtasks, assume the page is stuck on
+            // a poll loop (live price, animation frame, debounce timer)
+            // and exit with the work so far.
+            let useful_work = mt_this_iter > 0 || resolved > 0;
+            if useful_work {
+                polling_iters = 0;
+            } else if !microtasks_pending && pending_fetches == 0 {
+                polling_iters += 1;
+                if polling_iters >= 3 {
+                    reason = "polling_detected";
+                    break;
+                }
+            }
+
             let did_work_this_iter = mt_this_iter > 0 || fired > 0 || resolved > 0;
             if !did_work_this_iter && !microtasks_pending && pending_fetches > 0 {
                 // Only fetches in flight — sleep briefly waiting for the worker
@@ -1705,9 +1753,12 @@ impl Session {
             "pending_fetches": self.eval("__pendingFetches()")?.as_u64().unwrap_or(0),
             "pending_microtasks": self.js_rt.is_job_pending(),
             // Why settle exited. One of:
-            //   "idle"             — all queues drained (success)
-            //   "budget_exhausted" — wall-clock max_ms hit
-            //   "max_iters"        — iteration cap hit (typically pathological microtask loop)
+            //   "idle"               — all queues drained (success)
+            //   "budget_exhausted"   — wall-clock max_ms hit
+            //   "max_iters"          — iteration cap hit (pathological microtask loop)
+            //   "polling_detected"   — timers kept firing without producing
+            //                          microtasks/fetches (live-poll setInterval);
+            //                          page is content-stable, just poll-perpetual
             // Drivers should use this to choose a recovery action.
             "reason": reason,
             // Back-compat: timed_out=true matches either budget_exhausted or
@@ -2201,6 +2252,15 @@ fn detect_challenge(status: u16, body: &str) -> Option<Value> {
                 "your browser has been flagged",
                 "as you were browsing",
             ],
+            "",
+        ),
+        // Reddit's own JS proof-of-work challenge — solvable without real Chrome.
+        // Detected by its unique inline script marker; higher confidence than
+        // generic_human_verification so it wins when both patterns would fire.
+        (
+            "reddit_js_challenge",
+            0.95,
+            &["await(async e=>e+e)(\""],
             "",
         ),
         (
