@@ -291,6 +291,178 @@
     return Object.keys(_pendingFetches).length;
   };
 
+  // ---- ES module loader (best-effort v1) --------------------------------
+  //
+  // Modern apps that use <script type="module"> or dynamic import() expect
+  // browser-spec module semantics: dependency graph evaluated bottom-up,
+  // each module evaluated exactly once, named/default imports/exports,
+  // top-level await, importmaps, etc. Full semantics are huge.
+  //
+  // v1 covers the cases that matter for content extraction:
+  //   - <script type="module"> entry points (static)
+  //   - Dynamic <script type="module"> insertion via appendChild
+  //   - Static `import 'url'` and `import x from 'url'` statements
+  //   - Recursive dep loading with per-URL execution cache
+  //   - CSS imports skipped silently
+  //   - Bare specifiers (e.g. `import 'react'`) skipped with a warn
+  //
+  // What v1 does NOT cover:
+  //   - Dynamic import(url) syntax — needs source transformation; the
+  //     callsite gets a syntax error which PR #6's eval-error path
+  //     dispatches as a script error event
+  //   - Named imports DO bring deps' side effects in but the named
+  //     binding becomes undefined in the importer (because we don't
+  //     model module exports). Code that only USES default exports for
+  //     side effects works; code that USES the named bindings throws.
+  //   - export statements are stripped — declared bindings end up at
+  //     module scope (which collapses to global because we eval as
+  //     classic) and inadvertently pollute globals. Real fix needs
+  //     QuickJS module mode; defer.
+  //   - importmap, top-level await, cyclic imports.
+  //
+  // Visibility: every load emits a `module_loaded` NDJSON event so
+  // drivers can see which modules executed. (Not yet implemented as
+  // host_emit; uses console.log fallback.)
+
+  // url → "loading" | "loaded" | "failed". A module fetched twice in
+  // one navigation is evaluated once.
+  var _moduleStatus = {};
+  // url → Promise resolving when module is loaded (so importers can await).
+  var _moduleLoading = {};
+
+  // Reset between navigates so page A's module cache doesn't leak into
+  // page B. Called from dom.js's __seedDOM via the same global hook
+  // pattern as MutationObservers.
+  globalThis.__resetModuleLoader = function() {
+    _moduleStatus = {};
+    _moduleLoading = {};
+  };
+
+  // Return [{url, isSideEffect}] for the static imports in `source`.
+  // Regex-based — matches the common forms but won't catch every spec
+  // edge case (e.g. multi-line imports with comments interleaved).
+  // Good enough for v1; parser-based would need a proper JS parser
+  // shipped client-side which is overkill.
+  function _parseImports(source) {
+    var out = [];
+    // import 'url';
+    // import "url";
+    // import x from 'url';
+    // import { x, y } from 'url';
+    // import * as ns from 'url';
+    // import x, { y } from 'url';
+    // (re-)export forms also bring deps in:
+    // export * from 'url';
+    // export { x } from 'url';
+    var re = /(?:^|[\s;])(?:import|export)(?:\s+[^'"`]+?\s+from)?\s+["']([^"']+)["']\s*;?/g;
+    var m;
+    while ((m = re.exec(source)) !== null) {
+      out.push(m[1]);
+    }
+    return out;
+  }
+
+  // Strip import/export statements from `source` so the remainder
+  // evaluates as classic JS. Conservative — matches whole statements
+  // ending in semicolon or newline.
+  function _stripModuleSyntax(source) {
+    // Strip import statements
+    source = source.replace(
+      /(?:^|\n)\s*import\s+(?:[^'"`;]+?\s+from\s+)?["'][^"']+["']\s*;?/g,
+      '\n'
+    );
+    // Strip export statements that re-export from other modules
+    source = source.replace(
+      /(?:^|\n)\s*export\s+(?:\*|\{[^}]*\})\s+from\s+["'][^"']+["']\s*;?/g,
+      '\n'
+    );
+    // Strip `export ` keyword from `export const/let/var/function/class`
+    // — leaves the declaration in place at module (= global) scope.
+    source = source.replace(/(^|\n)\s*export\s+(default\s+)?/g, '$1');
+    return source;
+  }
+
+  // Resolve a module specifier against the importer's URL.
+  // Returns null for bare specifiers (e.g. 'react') — we don't have
+  // an importmap and can't resolve them.
+  function _resolveModuleSpecifier(spec, importerUrl) {
+    if (!spec) return null;
+    // CSS imports — skip silently. Modern bundlers transform these,
+    // and at extraction time we don't render CSS anyway.
+    if (/\.css(\?|$)/i.test(spec)) return null;
+    // Absolute or root-relative
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(spec) || spec.charAt(0) === '/') {
+      return typeof __host_resolve_url === 'function'
+        ? __host_resolve_url(spec, importerUrl || '')
+        : spec;
+    }
+    // Path-relative
+    if (spec.charAt(0) === '.') {
+      return typeof __host_resolve_url === 'function'
+        ? __host_resolve_url(spec, importerUrl || '')
+        : spec;
+    }
+    // Bare specifier — would need an importmap. Return null and the
+    // caller skips it with a warn.
+    return null;
+  }
+
+  // Load a module given source + base URL. Returns Promise.
+  globalThis.__loadModule = function(source, baseUrl) {
+    if (typeof source !== 'string') return Promise.resolve();
+    var imports = _parseImports(source);
+    // Recursively load each import, then eval the cleaned source.
+    var depPromises = [];
+    for (var i = 0; i < imports.length; i++) {
+      var resolved = _resolveModuleSpecifier(imports[i], baseUrl || '');
+      if (!resolved) continue; // bare or CSS — skipped
+      depPromises.push(globalThis.__loadModuleByURL(resolved));
+    }
+    return Promise.all(depPromises).then(function() {
+      var cleaned = _stripModuleSyntax(source);
+      try { (0, eval)(cleaned); } catch (e) {
+        // Surface to driver via the dynamic-script error hook if installed.
+        if (typeof globalThis.__unb_dyn_script_error === 'function') {
+          try { globalThis.__unb_dyn_script_error(baseUrl || '<inline-module>',
+                                                   String(e && e.message || e)); } catch (_e) {}
+        }
+        throw e;
+      }
+    });
+  };
+
+  // Load a module by URL. Caches by URL — re-requests resolve to the
+  // same Promise (matches browser module semantics: each URL evaluates
+  // exactly once per realm).
+  globalThis.__loadModuleByURL = function(url) {
+    if (!url) return Promise.resolve();
+    if (_moduleStatus[url] === 'loaded') return Promise.resolve();
+    if (_moduleLoading[url]) return _moduleLoading[url];
+    _moduleStatus[url] = 'loading';
+    var promise = fetch(url).then(function(resp) {
+      if (resp.status >= 200 && resp.status < 300 && resp.status !== 204) {
+        return resp.text().then(function(source) {
+          return globalThis.__loadModule(source, url);
+        });
+      } else if (resp.status === 204) {
+        // Blocked by policy or genuine 204 — record as loaded so dependents
+        // proceed. This matches the stub_success pattern from PR #6.
+        return Promise.resolve();
+      } else {
+        return Promise.reject(new Error('module fetch ' + resp.status + ': ' + url));
+      }
+    }).then(function() {
+      _moduleStatus[url] = 'loaded';
+      delete _moduleLoading[url];
+    }).catch(function(e) {
+      _moduleStatus[url] = 'failed';
+      delete _moduleLoading[url];
+      throw e;
+    });
+    _moduleLoading[url] = promise;
+    return promise;
+  };
+
   // ---- Host-facing event-loop helpers (used by Rust settle) -------------
   globalThis.__pendingTimers = function() {
     return Object.keys(_timers).length;

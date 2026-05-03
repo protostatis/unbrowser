@@ -289,6 +289,7 @@
     if (!isJs) return;
 
     var src = child.src !== undefined ? child.src : attrs.src;
+    var isModule = type === 'module';
     if (src) {
       // QuickJS doesn't expose a `URL` constructor. Manual resolver covers
       // the cases we actually see: absolute, protocol-relative, root-relative,
@@ -301,6 +302,25 @@
         // Pre-shim insertion (shouldn't happen in practice). Bail.
         return;
       }
+
+      // Type=module: route through the module loader (recursively fetches
+      // and evaluates dependencies before the entry module). Without this,
+      // dynamic <script type=module> insertion fails with a SyntaxError on
+      // the import statement and dispatches `error`. (Module loader is
+      // best-effort v1 — see shims.js.)
+      if (isModule) {
+        if (typeof __loadModuleByURL !== 'function') {
+          try { child.dispatchEvent(new Event('error')); } catch (_e) {}
+          return;
+        }
+        __loadModuleByURL(url).then(function() {
+          child.dispatchEvent(new Event('load'));
+        }).catch(function() {
+          try { child.dispatchEvent(new Event('error')); } catch (_e) {}
+        });
+        return;
+      }
+
       fetch(url).then(function(resp) {
         var status = resp.status;
         if (status >= 200 && status < 300 && status !== 204) {
@@ -351,7 +371,17 @@
       // (matches browser behavior: load events are not synchronous w.r.t.
       // the appendChild call site).
       var code = child.textContent || '';
+      var inlineBase = (typeof location !== 'undefined' && location.href) || '';
       if (code) {
+        if (isModule && typeof __loadModule === 'function') {
+          // Inline module — fetch deps first, then eval the cleaned body.
+          __loadModule(code, inlineBase).then(function() {
+            try { child.dispatchEvent(new Event('load')); } catch (e) {}
+          }).catch(function() {
+            try { child.dispatchEvent(new Event('error')); } catch (e) {}
+          });
+          return;
+        }
         try { (0, eval)(code); } catch (e) {}
       }
       Promise.resolve().then(function() {
@@ -1137,6 +1167,12 @@
     // Hook is a no-op until shims.js installs it; safe to call before.
     if (typeof globalThis.__resetActiveMutationObservers === 'function') {
       try { globalThis.__resetActiveMutationObservers(); } catch (e) {}
+    }
+    // Same for the ES module load cache — page A's module-URL execution
+    // map shouldn't carry into page B (URLs may resolve to different
+    // content, and we want re-evaluation of side effects).
+    if (typeof globalThis.__resetModuleLoader === 'function') {
+      try { globalThis.__resetModuleLoader(); } catch (e) {}
     }
 
     // Clear existing
