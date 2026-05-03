@@ -1265,12 +1265,39 @@ impl Session {
             // script-phase one. (Settle pump callbacks are bounded too — they
             // run inside QuickJS evals which still consult the same atomic.)
             self.restore_eval_deadline(prev_deadline);
-            // Fire DOMContentLoaded → settle → load → settle.
+            // Fire DOMContentLoaded → settle → load → settle. Each settle
+            // emits a `settle_exit` event with reason + counts so traces show
+            // exactly why we bailed (idle / budget_exhausted / max_iters).
+            // Without this, a hung Next.js hydration looks indistinguishable
+            // from a clean exit in the NDJSON stream — only `policy_trace`
+            // carries the settle blob and it's often truncated.
             let _ = self
                 .eval("typeof __fireDOMContentLoaded === 'function' && __fireDOMContentLoaded()");
             let after_dcl = self.settle(2000, 100).await.ok();
+            if let Some(r) = &after_dcl {
+                emit_event(
+                    "settle_exit",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "phase": "after_dcl",
+                        "result": r,
+                    }),
+                );
+            }
             let _ = self.eval("typeof __fireLoad === 'function' && __fireLoad()");
             let after_load = self.settle(1500, 50).await.ok();
+            if let Some(r) = &after_load {
+                emit_event(
+                    "settle_exit",
+                    json!({
+                        "schema_version": 1,
+                        "navigation_id": nav_id,
+                        "phase": "after_load",
+                        "result": r,
+                    }),
+                );
+            }
             // Phase A: per-navigation policy trace. One event summarizing
             // every decision made during this navigate, joined to outcomes
             // via navigation_id when the driver later calls report_outcome.
@@ -1512,7 +1539,13 @@ impl Session {
                 break;
             }
 
-            // 1. Drain microtasks.
+            // 1. Drain microtasks. The inner loop honors max_ms — without
+            // this, a MutationObserver→mutate→MutationObserver cascade (common
+            // on hydrating Next.js / React SPAs like Vercel, Tailwind, Next.js
+            // homepage) can run thousands of microtasks in a single outer
+            // iter and blow past max_ms by 10–20×. Cap at 2000 microtasks per
+            // pass as defense-in-depth (a normal page's burst is well under
+            // a few hundred; 2k is 10× headroom).
             let mut mt_this_iter: u64 = 0;
             loop {
                 let had_more = self
@@ -1523,8 +1556,11 @@ impl Session {
                     break;
                 }
                 mt_this_iter += 1;
-                if mt_this_iter > 10_000 {
-                    break; // safety against infinite microtask loops
+                if mt_this_iter > 2_000 {
+                    break;
+                }
+                if start.elapsed().as_millis() as u64 >= max_ms {
+                    break;
                 }
             }
             total_microtasks += mt_this_iter;
