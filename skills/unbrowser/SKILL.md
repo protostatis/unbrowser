@@ -1,7 +1,7 @@
 ---
 name: unbrowser
 description: Cheap first-pass web browsing without launching Chrome — fetch SSR pages, follow links, query the DOM, run JS, detect bot-wall challenges. Escalate to OpenClaw's managed browser when the page can't be served headlessly.
-version: 0.0.7
+version: 0.0.8
 metadata:
   openclaw:
     requires:
@@ -83,6 +83,20 @@ uv tool install pyunbrowser
 
 The wheel ships the platform-specific native binary inside it and registers an `unbrowser` script on `$PATH`. macOS (arm64/x86_64) and Linux (x86_64) are supported; other platforms must build from source (`cargo install --git https://github.com/protostatis/unbrowser`). PyPI distribution name is `pyunbrowser`, not `unbrowser`, due to PyPI name moderation; the binary and import name are still `unbrowser`.
 
+## First-time setup
+
+Before any of the examples below will work, install the binary:
+
+```bash
+pip install pyunbrowser   # registers `unbrowser` on $PATH and the `unbrowser` Python module
+```
+
+If you skip this and try to use the skill, you'll see one of:
+- Shell: `command not found: unbrowser`
+- Python: `ModuleNotFoundError: No module named 'unbrowser'`
+
+If you see either, run the install command above, then retry. See [Install](#install) for `pipx` / `uv` / source-build alternatives.
+
 ## Quick start (RPC over stdio)
 
 `unbrowser` reads JSON-RPC commands on stdin and writes responses on stdout. One process per session — cookies, parsed DOM, and JS state persist across commands.
@@ -100,6 +114,7 @@ EOF
 ## Quick start (Python)
 
 ```python
+# Requires: pip install pyunbrowser  (see "First-time setup" above)
 from unbrowser import Client
 
 with Client() as ub:
