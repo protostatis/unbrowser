@@ -3948,7 +3948,7 @@ mod outcome_tests {
             Some("json_ld")
         );
         // Sanity check: the threshold the test pivots on hasn't drifted.
-        assert!(EXTRACT_OBJECT_MIN_KEYS <= 4);
+        const { assert!(EXTRACT_OBJECT_MIN_KEYS <= 4) };
     }
 
     #[test]
@@ -4073,7 +4073,7 @@ mod outcome_tests {
                 .and_then(|v| v.as_u64()),
             Some(3)
         );
-        assert!(BLOCKMAP_MIN_STRUCTURE <= 3);
+        const { assert!(BLOCKMAP_MIN_STRUCTURE <= 3) };
     }
 
     #[test]
