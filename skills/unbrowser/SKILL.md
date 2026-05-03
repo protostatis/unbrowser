@@ -1,7 +1,7 @@
 ---
 name: unbrowser
 description: Cheap first-pass web browsing without launching Chrome — fetch SSR pages, follow links, query the DOM, run JS, detect bot-wall challenges. Escalate to OpenClaw's managed browser when the page can't be served headlessly.
-version: 0.0.8
+version: 0.0.9
 metadata:
   openclaw:
     requires:
@@ -47,7 +47,7 @@ When in doubt about whether a task fits the intended use, surface the action to 
 ### Install hygiene
 
 - **Prefer isolated installation.** `pipx install pyunbrowser` or `uv tool install pyunbrowser` quarantine the binary and its native dependency. `pip install --user` is acceptable but mixes the binary into the user's site-packages.
-- **Pin the version in production.** `pipx install pyunbrowser==0.0.7` (or whatever version is current). The wheel ships a platform-specific native binary; verify the upstream repository (https://github.com/protostatis/unbrowser) before upgrading across versions.
+- **Pin the version in production.** `pipx install pyunbrowser==0.0.6` (or whatever version is current — see https://pypi.org/project/pyunbrowser/). The wheel ships a platform-specific native binary; verify the upstream repository (https://github.com/protostatis/unbrowser) before upgrading across versions.
 
 These rules are conservative on purpose. The skill's purpose is browsing, not authenticated automation — when in doubt, escalate to a managed-browser flow that has the user in the loop.
 
