@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "fit_timestamp": 1746230400,
+  "fit_corpus_size": 10,
+  "training_pipeline_version": "v0-hand-curated",
+  "domains": {
+    "news.ycombinator.com": {
+      "domain": "news.ycombinator.com",
+      "framework": "static_ssr",
+      "blocklist_additions": [],
+      "required_patterns": ["news.ycombinator.com/hn.js"],
+      "settle_distribution": {"p50_ms": 50, "p90_ms": 200, "p95_ms": 500},
+      "shape_hint": "static_table"
+    },
+    "en.wikipedia.org": {
+      "domain": "en.wikipedia.org",
+      "framework": "static_ssr",
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 100, "p90_ms": 300, "p95_ms": 600},
+      "shape_hint": "static_article"
+    },
+    "github.com": {
+      "domain": "github.com",
+      "framework": "react-18",
+      "blocklist_additions": [
+        "collector.github.com",
+        "api.github.com/_private/browser/stats"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 800, "p90_ms": 1500, "p95_ms": 2500},
+      "shape_hint": "react_ssr_hydrated"
+    },
+    "npmjs.com": {
+      "domain": "npmjs.com",
+      "framework": "next-14",
+      "blocklist_additions": [
+        "logs.npmjs.com",
+        "telemetry.npmjs.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 600, "p90_ms": 1200, "p95_ms": 2000},
+      "shape_hint": "next_inlined_data"
+    },
+    "reddit.com": {
+      "domain": "reddit.com",
+      "framework": "web_components",
+      "blocklist_additions": [
+        "events.redditmedia.com",
+        "alb.reddit.com",
+        "alb.staging.reddit.com",
+        "w3-reporting-nel.reddit.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 1500, "p90_ms": 3000, "p95_ms": 5000},
+      "shape_hint": "web_components_dom_heavy"
+    },
+    "youtube.com": {
+      "domain": "youtube.com",
+      "framework": "data_store_spa",
+      "blocklist_additions": [
+        "www.youtube.com/youtubei/v1/log_event",
+        "youtube.com/api/stats",
+        "youtube.com/csi_204",
+        "youtube.com/generate_204",
+        "play.google.com/log"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 2000, "p90_ms": 4000, "p95_ms": 8000},
+      "shape_hint": "data_store_inlined_ytinitialdata"
+    },
+    "cnbc.com": {
+      "domain": "cnbc.com",
+      "framework": "react-18",
+      "blocklist_additions": [
+        "zephr-templates.cnbc.com",
+        "geo.cnbc.com",
+        "track.cnbc.com",
+        "assets.bounceexchange.com",
+        "static.bounceexchange.com",
+        "cdn.bullwhip.cloud"
+      ],
+      "required_patterns": ["i.cnbc.com/_next/static"],
+      "settle_distribution": {"p50_ms": 1800, "p90_ms": 2500, "p95_ms": 4000},
+      "shape_hint": "spa_shell_with_density"
+    },
+    "polymarket.com": {
+      "domain": "polymarket.com",
+      "framework": "react-18",
+      "blocklist_additions": [
+        "polymarket-amp.s3.us-east-2.amazonaws.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 1200, "p90_ms": 2200, "p95_ms": 3500},
+      "shape_hint": "card_grid_spa"
+    },
+    "kalshi.com": {
+      "domain": "kalshi.com",
+      "framework": "react-18",
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 1500, "p90_ms": 2500, "p95_ms": 4000},
+      "shape_hint": "card_grid_spa"
+    },
+    "zillow.com": {
+      "domain": "zillow.com",
+      "framework": "react-18",
+      "blocklist_additions": [
+        "geo.zillow.com",
+        "perimeterx-bot-detection.zillow.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {"p50_ms": 2500, "p90_ms": 5000, "p95_ms": 8000},
+      "shape_hint": "bot_protected_ssr_with_listings"
+    }
+  },
+  "framework_priors": {
+    "react-18": {
+      "framework": "react-18",
+      "blocklist_additions": [],
+      "settle_distribution": {"p50_ms": 1500, "p90_ms": 3000, "p95_ms": 5000}
+    },
+    "next-14": {
+      "framework": "next-14",
+      "blocklist_additions": [],
+      "settle_distribution": {"p50_ms": 1200, "p90_ms": 2500, "p95_ms": 4000}
+    },
+    "static_ssr": {
+      "framework": "static_ssr",
+      "blocklist_additions": [],
+      "settle_distribution": {"p50_ms": 100, "p90_ms": 400, "p95_ms": 800}
+    }
+  }
+}
