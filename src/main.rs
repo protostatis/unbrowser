@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+mod bytecode_cache;
 mod network_store;
 mod policy;
 mod profile;
@@ -369,6 +370,13 @@ struct Session {
     // number of navigates per process — small in practice; if it ever
     // matters we can switch to a ring buffer.
     nav_ids_issued: Mutex<HashSet<String>>,
+    /// Bytecode cache config for eval_with_cache. shim_hash incorporates
+    /// the JS environment (shims.js + dom.js) so cached bytecode whose
+    /// captured globals diverge from the current build is rejected
+    /// automatically. Disabled when UNBROWSER_NO_BYTECODE_CACHE=1.
+    bytecode_cache_root: std::path::PathBuf,
+    shim_hash: String,
+    bytecode_cache_disabled: bool,
 }
 
 impl Session {
@@ -553,6 +561,18 @@ impl Session {
 
             Ok(())
         })?;
+        // Bytecode cache setup: hash the JS env so cache files invalidate
+        // automatically on shims.js / dom.js changes. Prune once at startup
+        // so the cap is honored across many process lifetimes — we don't
+        // pay the directory walk on every cache hit.
+        let bytecode_cache_disabled = bytecode_cache::is_disabled();
+        let bytecode_cache_root = bytecode_cache::cache_dir();
+        let shim_hash = bytecode_cache::sha256(&format!(
+            "{DOM_JS}\0{SHIMS_JS}\0{BLOCKMAP_JS}\0{INTERACT_JS}"
+        ));
+        if !bytecode_cache_disabled {
+            bytecode_cache::prune(&bytecode_cache_root, bytecode_cache::max_total_bytes());
+        }
         Ok(Self {
             js_rt,
             js_ctx,
@@ -565,6 +585,9 @@ impl Session {
             policy_block,
             nav_counter: AtomicU64::new(0),
             nav_ids_issued: Mutex::new(HashSet::new()),
+            bytecode_cache_root,
+            shim_hash,
+            bytecode_cache_disabled,
         })
     }
 
@@ -621,6 +644,115 @@ impl Session {
                 Err(e) => Err(anyhow!("js eval: {e}")),
             }
         })
+    }
+
+    // Eval with bytecode cache. On hit, skips the QuickJS parse phase
+    // (the dominant cost on heavy React/Next bundles). On miss, compiles,
+    // writes bytecode to disk, then executes. `name` is a debug-friendly
+    // identifier (URL or "inline-{hash}") used for events and source-map-
+    // style stack frames. Falls back to plain eval on any cache failure
+    // so caching is opportunistic — never blocks correctness.
+    //
+    // See src/bytecode_cache.rs for the unsafe QuickJS glue.
+    fn eval_with_cache(&self, source: &str, name: &str) -> Result<()> {
+        if self.bytecode_cache_disabled {
+            return self.eval_void(source);
+        }
+        let key = bytecode_cache::cache_key(source, &self.shim_hash);
+        let root = &self.bytecode_cache_root;
+        // Suspend the eval-deadline watchdog for the compile path. The
+        // watchdog interrupt fires periodically inside JS_Eval and aborts
+        // when now >= deadline. For COMPILE_ONLY eval that doesn't run
+        // user code, the watchdog spuriously aborts on scripts above
+        // ~16 KB (observed empirically). Compile is bounded by source
+        // length anyway. Restored before returning.
+        let prev_dl = self.eval_deadline_ms.swap(0, Ordering::Relaxed);
+        let result = self.js_ctx.with(|ctx| -> Result<()> {
+            // Try cache.
+            if let Some(bytes) = bytecode_cache::read(root, &key) {
+                let bytes_len = bytes.len();
+                match bytecode_cache::load_and_eval(&ctx, &bytes) {
+                    Ok(()) => {
+                        emit_event(
+                            "bytecode_cache",
+                            json!({
+                                "schema_version": 1,
+                                "hit": true,
+                                "name": name,
+                                "bytes": bytes_len,
+                            }),
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        // Corrupt or version-skew. Fall through to recompile;
+                        // the corrupt file gets overwritten by the write below.
+                        emit_event(
+                            "bytecode_cache",
+                            json!({
+                                "schema_version": 1,
+                                "hit": false,
+                                "name": name,
+                                "load_error": e,
+                            }),
+                        );
+                    }
+                }
+            }
+            // Cache miss: compile, persist, then execute via the
+            // freshly-produced bytecode (avoids running JS_Eval twice).
+            match bytecode_cache::compile_to_bytecode(&ctx, source, name) {
+                Ok(bytes) => {
+                    let _ = bytecode_cache::write(root, &key, &bytes);
+                    let bytes_len = bytes.len();
+                    let result = bytecode_cache::load_and_eval(&ctx, &bytes);
+                    emit_event(
+                        "bytecode_cache",
+                        json!({
+                            "schema_version": 1,
+                            "hit": false,
+                            "name": name,
+                            "compiled_bytes": bytes_len,
+                        }),
+                    );
+                    match result {
+                        Ok(()) => Ok(()),
+                        // Eval-time exception — surface via ctx.catch
+                        // exactly like plain eval would.
+                        Err(_) => match ctx.catch().get::<rquickjs::Value>() {
+                            Ok(_) => Err(anyhow!("{}", format_js_exception(ctx.catch()))),
+                            Err(_) => Err(anyhow!("bytecode eval threw (no exception captured)")),
+                        },
+                    }
+                }
+                Err(e) => {
+                    // Compile failure (SyntaxError, OOM, or QuickJS refusal).
+                    // Surface via NDJSON so drivers see why caching skipped.
+                    // Fall back to plain eval — matches eval_void's
+                    // exception path so JS-level errors still surface.
+                    emit_event(
+                        "bytecode_cache",
+                        json!({
+                            "schema_version": 1,
+                            "hit": false,
+                            "name": name,
+                            "compile_error": e,
+                        }),
+                    );
+                    match ctx.eval::<rquickjs::Value, _>(source) {
+                        Ok(_) => Ok(()),
+                        Err(rquickjs::Error::Exception) => {
+                            Err(anyhow!("{}", format_js_exception(ctx.catch())))
+                        }
+                        Err(e) => Err(anyhow!("js eval: {e}")),
+                    }
+                }
+            }
+        });
+        // Restore the watchdog before returning so the rest of the
+        // navigate stays bounded.
+        self.eval_deadline_ms.store(prev_dl, Ordering::Relaxed);
+        result
     }
 
     fn eval(&self, code: &str) -> Result<Value> {
@@ -988,22 +1120,23 @@ impl Session {
             let mut interrupted: usize = 0;
             for (script_id, kind_str, url, source) in &sources {
                 let eval_start = std::time::Instant::now();
-                // ES module routing: if the source looks like a module
-                // (contains `import` or `export` statements at line start),
-                // hand it to JS-side __loadModule which recursively loads
-                // dependencies before evaluating the cleaned body. Returns
-                // a Promise; settle drives it to completion. (Static
-                // counterpart of dom.js's dynamic-script module path.)
-                // For inline modules and modules without a base URL, we
-                // pass an empty string and the loader resolves relative
-                // imports against location.href in JS.
+                // Three-way routing:
+                //   1. Module-shaped sources (PR #11) → __loadModule, which
+                //      recursively loads deps then evals the cleaned body.
+                //      Returns a Promise; settle drives it to completion.
+                //      Bytecode caching skipped for modules — the loader
+                //      strips imports before eval, so the cached bytecode
+                //      would not match the public source's hash.
+                //   2. Classic sources → eval_with_cache. Hit skips parse;
+                //      miss compiles + caches + evals.
                 let result = if looks_like_module(source) {
                     let src_lit = serde_json::to_string(source).unwrap_or_default();
                     let url_lit =
                         serde_json::to_string(url.as_deref().unwrap_or("")).unwrap_or_default();
                     self.eval_void(&format!("__loadModule({src_lit}, {url_lit})"))
                 } else {
-                    self.eval_void(source)
+                    let cache_name = url.as_deref().unwrap_or("inline").to_string();
+                    self.eval_with_cache(source, &cache_name)
                 };
                 let duration_us = eval_start.elapsed().as_micros() as u64;
                 match result {
