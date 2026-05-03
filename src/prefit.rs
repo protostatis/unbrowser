@@ -139,8 +139,10 @@ impl BetaPosterior {
     /// posteriors (α or β ≤ 0) fall back to a uniform draw, which
     /// matches the BetaPosterior::mean() fallback semantics.
     pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
-        if !self.alpha.is_finite() || !self.beta.is_finite()
-            || self.alpha <= 0.0 || self.beta <= 0.0
+        if !self.alpha.is_finite()
+            || !self.beta.is_finite()
+            || self.alpha <= 0.0
+            || self.beta <= 0.0
         {
             return Open01.sample(rng);
         }
@@ -345,7 +347,8 @@ impl PrefitBundle {
         decision_key: &str,
         threshold: f64,
     ) -> bool {
-        self.decide_traced(rng, domain, decision_key, threshold).blocked
+        self.decide_traced(rng, domain, decision_key, threshold)
+            .blocked
     }
 
     /// Same as `decide`, but returns the posterior + drawn sample so
@@ -478,14 +481,26 @@ mod tests {
 
     #[test]
     fn beta_mean_basic() {
-        let p = BetaPosterior { alpha: 3.0, beta: 1.0, n: 4 };
+        let p = BetaPosterior {
+            alpha: 3.0,
+            beta: 1.0,
+            n: 4,
+        };
         assert!((p.mean() - 0.75).abs() < 1e-12);
 
-        let uniform = BetaPosterior { alpha: 1.0, beta: 1.0, n: 0 };
+        let uniform = BetaPosterior {
+            alpha: 1.0,
+            beta: 1.0,
+            n: 0,
+        };
         assert!((uniform.mean() - 0.5).abs() < 1e-12);
 
         // Degenerate guard.
-        let zero = BetaPosterior { alpha: 0.0, beta: 0.0, n: 0 };
+        let zero = BetaPosterior {
+            alpha: 0.0,
+            beta: 0.0,
+            n: 0,
+        };
         assert!((zero.mean() - 0.5).abs() < 1e-12);
     }
 
@@ -494,7 +509,11 @@ mod tests {
         use rand::SeedableRng;
         use rand::rngs::StdRng;
         let mut rng = StdRng::seed_from_u64(0xCAFEBABE);
-        let p = BetaPosterior { alpha: 4.0, beta: 6.0, n: 10 };
+        let p = BetaPosterior {
+            alpha: 4.0,
+            beta: 6.0,
+            n: 10,
+        };
         for _ in 0..200 {
             let s = p.sample(&mut rng);
             assert!(s > 0.0 && s < 1.0, "sample out of (0, 1): {s}");
@@ -508,18 +527,29 @@ mod tests {
         use rand::SeedableRng;
         use rand::rngs::StdRng;
         let mut rng = StdRng::seed_from_u64(42);
-        let p = BetaPosterior { alpha: 80.0, beta: 20.0, n: 100 };
+        let p = BetaPosterior {
+            alpha: 80.0,
+            beta: 20.0,
+            n: 100,
+        };
         let n = 1000;
         let sum: f64 = (0..n).map(|_| p.sample(&mut rng)).sum();
         let mean = sum / n as f64;
-        assert!((mean - 0.8).abs() < 0.02, "empirical mean {mean} far from 0.8");
+        assert!(
+            (mean - 0.8).abs() < 0.02,
+            "empirical mean {mean} far from 0.8"
+        );
     }
 
     #[test]
     fn beta_sample_seeded_is_deterministic() {
         use rand::SeedableRng;
         use rand::rngs::StdRng;
-        let p = BetaPosterior { alpha: 5.0, beta: 5.0, n: 8 };
+        let p = BetaPosterior {
+            alpha: 5.0,
+            beta: 5.0,
+            n: 8,
+        };
         let mut a = StdRng::seed_from_u64(7);
         let mut b = StdRng::seed_from_u64(7);
         for _ in 0..50 {
@@ -527,7 +557,12 @@ mod tests {
         }
     }
 
-    fn make_bundle_with_posterior(domain: &str, key: &str, post: BetaPosterior, schema: u32) -> PrefitBundle {
+    fn make_bundle_with_posterior(
+        domain: &str,
+        key: &str,
+        post: BetaPosterior,
+        schema: u32,
+    ) -> PrefitBundle {
         let mut posts = HashMap::new();
         posts.insert(key.to_string(), post);
         let mut domains = HashMap::new();
@@ -555,19 +590,28 @@ mod tests {
 
     #[test]
     fn lookup_posterior_exact_and_suffix() {
-        let post = BetaPosterior { alpha: 9.0, beta: 1.0, n: 9 };
+        let post = BetaPosterior {
+            alpha: 9.0,
+            beta: 1.0,
+            n: 9,
+        };
         let b = make_bundle_with_posterior("cnbc.com", "block:zephr.com", post, 2);
 
         // Exact match.
         let got = b.lookup_posterior("cnbc.com", "block:zephr.com").unwrap();
         assert_eq!(got, post);
         // Suffix match (subdomain of registered domain).
-        let got = b.lookup_posterior("www.cnbc.com", "block:zephr.com").unwrap();
+        let got = b
+            .lookup_posterior("www.cnbc.com", "block:zephr.com")
+            .unwrap();
         assert_eq!(got, post);
         // Missing decision key.
         assert!(b.lookup_posterior("cnbc.com", "block:other.com").is_none());
         // Missing domain entirely.
-        assert!(b.lookup_posterior("nbcnews.com", "block:zephr.com").is_none());
+        assert!(
+            b.lookup_posterior("nbcnews.com", "block:zephr.com")
+                .is_none()
+        );
     }
 
     #[test]
@@ -578,7 +622,11 @@ mod tests {
         let b = make_bundle_with_posterior(
             "x.com",
             "block:y.com",
-            BetaPosterior { alpha: 1.0, beta: 1.0, n: 0 },
+            BetaPosterior {
+                alpha: 1.0,
+                beta: 1.0,
+                n: 0,
+            },
             2,
         );
         assert!(!b.decide(&mut rng, "no-such-domain.invalid", "block:y.com", 0.5));
@@ -592,7 +640,11 @@ mod tests {
         // High-confidence success posterior — should sample > 0.5
         // virtually always, so decide is True with overwhelming
         // probability. Pick a seed where we know the answer.
-        let post = BetaPosterior { alpha: 90.0, beta: 10.0, n: 100 };
+        let post = BetaPosterior {
+            alpha: 90.0,
+            beta: 10.0,
+            n: 100,
+        };
         let b = make_bundle_with_posterior("a.com", "block:t.com", post, 2);
         let mut r1 = StdRng::seed_from_u64(123);
         let mut r2 = StdRng::seed_from_u64(123);
@@ -642,7 +694,11 @@ mod tests {
         // A v2 bundle's posteriors round-trip through serde without
         // loss. Pinning this prevents an accidental field rename or
         // serde attribute change from breaking the bundle contract.
-        let post = BetaPosterior { alpha: 12.0, beta: 2.0, n: 14 };
+        let post = BetaPosterior {
+            alpha: 12.0,
+            beta: 2.0,
+            n: 14,
+        };
         let b = make_bundle_with_posterior("z.com", "block:t.com", post, 2);
         let s = serde_json::to_string(&b).unwrap();
         let back = PrefitBundle::from_json(&s).expect("v2 round-trip");

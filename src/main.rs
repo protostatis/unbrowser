@@ -1084,9 +1084,8 @@ impl Session {
                             // un-trained entries). When a posterior IS
                             // present, use Thompson sampling via
                             // `decide_traced` so the gate is informed.
-                            let has_posterior = bundle
-                                .lookup_posterior(&p.domain, &decision_key)
-                                .is_some();
+                            let has_posterior =
+                                bundle.lookup_posterior(&p.domain, &decision_key).is_some();
                             let (block_now, outcome) = if has_posterior {
                                 let mut rng = rand::thread_rng();
                                 let out = bundle.decide_traced(
