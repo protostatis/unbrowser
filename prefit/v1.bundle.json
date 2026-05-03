@@ -1,339 +1,2130 @@
 {
   "schema_version": 2,
-  "fit_timestamp": 1777823874,
-  "fit_corpus_size": 10,
-  "training_pipeline_version": "v2-from-handcurated",
+  "fit_timestamp": 1777829134,
+  "fit_corpus_size": 91,
+  "training_pipeline_version": "v0.0.6-91domains-5x-fit",
   "domains": {
-    "cnbc.com": {
-      "domain": "cnbc.com",
-      "framework": "react-18",
-      "blocklist_additions": [
-        "zephr-templates.cnbc.com",
-        "geo.cnbc.com",
-        "track.cnbc.com",
-        "assets.bounceexchange.com",
-        "static.bounceexchange.com",
-        "cdn.bullwhip.cloud"
-      ],
-      "required_patterns": [
-        "i.cnbc.com/_next/static"
-      ],
-      "settle_distribution": {
-        "p50_ms": 1800,
-        "p90_ms": 2500,
-        "p95_ms": 4000
-      },
-      "shape_hint": "spa_shell_with_density",
-      "posteriors": {
-        "block:zephr-templates.cnbc.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:geo.cnbc.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:track.cnbc.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:assets.bounceexchange.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:static.bounceexchange.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:cdn.bullwhip.cloud": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "settle_fast:react-18": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        }
-      }
-    },
-    "en.wikipedia.org": {
-      "domain": "en.wikipedia.org",
-      "framework": "static_ssr",
+    "anthropic.com": {
+      "domain": "anthropic.com",
+      "framework": null,
       "blocklist_additions": [],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 100,
-        "p90_ms": 300,
-        "p95_ms": 600
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "static_article",
+      "shape_hint": null,
       "posteriors": {
-        "settle_fast:static_ssr": {
-          "alpha": 1.0,
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        }
+      }
+    },
+    "apnews.com": {
+      "domain": "apnews.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "googletagmanager.com",
+        "connect.facebook.net"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1641,
+        "p90_ms": 1682,
+        "p95_ms": 1682
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:connect.facebook.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "arstechnica.com": {
+      "domain": "arstechnica.com",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagservices.com",
+        "googletagmanager.com",
+        "amazon-adsystem.com",
+        "www.googletagservices.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 323,
+        "p90_ms": 323,
+        "p95_ms": 323
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:googletagservices.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:amazon-adsystem.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:www.googletagservices.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "blog.cloudflare.com": {
+      "domain": "blog.cloudflare.com",
+      "framework": null,
+      "blocklist_additions": [
+        "static.cloudflareinsights.com",
+        "onetrust.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:onetrust.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:static.cloudflareinsights.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "bsky.app": {
+      "domain": "bsky.app",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1502,
+        "p90_ms": 1502,
+        "p95_ms": 1502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "crates.io": {
+      "domain": "crates.io",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "defillama.com": {
+      "domain": "defillama.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "developer.mozilla.org": {
+      "domain": "developer.mozilla.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "dexscreener.com": {
+      "domain": "dexscreener.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "discordstatus.com": {
+      "domain": "discordstatus.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "doc.rust-lang.org": {
+      "domain": "doc.rust-lang.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "docs.astro.build": {
+      "domain": "docs.astro.build",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "docs.python.org": {
+      "domain": "docs.python.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 202,
+        "p90_ms": 202,
+        "p95_ms": 202
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
         }
       }
     },
     "github.com": {
       "domain": "github.com",
-      "framework": "react-18",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 18,
+        "p90_ms": 18,
+        "p95_ms": 18
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:react-18": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "gitlab.com": {
+      "domain": "gitlab.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1502,
+        "p90_ms": 1502,
+        "p95_ms": 1502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "godbolt.org": {
+      "domain": "godbolt.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "gumroad.com": {
+      "domain": "gumroad.com",
+      "framework": null,
       "blocklist_additions": [
-        "collector.github.com",
-        "api.github.com/_private/browser/stats"
+        "static.cloudflareinsights.com"
       ],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 800,
-        "p90_ms": 1500,
-        "p95_ms": 2500
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "react_ssr_hydrated",
+      "shape_hint": null,
       "posteriors": {
-        "block:collector.github.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+        "block:static.cloudflareinsights.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
         },
-        "block:api.github.com/_private/browser/stats": {
-          "alpha": 1.0,
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        }
+      }
+    },
+    "hackaday.com": {
+      "domain": "hackaday.com",
+      "framework": null,
+      "blocklist_additions": [
+        "usercentrics.eu",
+        "web.cmp.usercentrics.eu"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 52,
+        "p90_ms": 52,
+        "p95_ms": 52
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:usercentrics.eu": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
         },
-        "settle_fast:react-18": {
-          "alpha": 1.0,
+        "block:web.cmp.usercentrics.eu": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "hub.docker.com": {
+      "domain": "hub.docker.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "huggingface.co": {
+      "domain": "huggingface.co",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 12,
+        "p90_ms": 12,
+        "p95_ms": 12
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "itch.io": {
+      "domain": "itch.io",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
         }
       }
     },
     "kalshi.com": {
       "domain": "kalshi.com",
-      "framework": "react-18",
+      "framework": null,
       "blocklist_additions": [],
       "required_patterns": [],
-      "settle_distribution": {
-        "p50_ms": 1500,
-        "p90_ms": 2500,
-        "p95_ms": 4000
-      },
-      "shape_hint": "card_grid_spa",
+      "settle_distribution": null,
+      "shape_hint": null,
       "posteriors": {
         "settle_fast:react-18": {
           "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "lemmy.world": {
+      "domain": "lemmy.world",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "linear.app": {
+      "domain": "linear.app",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        }
+      }
+    },
+    "lobste.rs": {
+      "domain": "lobste.rs",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "magiceden.io": {
+      "domain": "magiceden.io",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "manifold.markets": {
+      "domain": "manifold.markets",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "mastodon.social": {
+      "domain": "mastodon.social",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "music.apple.com": {
+      "domain": "music.apple.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
         }
       }
     },
     "news.ycombinator.com": {
       "domain": "news.ycombinator.com",
-      "framework": "static_ssr",
+      "framework": null,
       "blocklist_additions": [],
-      "required_patterns": [
-        "news.ycombinator.com/hn.js"
-      ],
+      "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 50,
-        "p90_ms": 200,
-        "p95_ms": 500
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "static_table",
+      "shape_hint": null,
       "posteriors": {
         "settle_fast:static_ssr": {
-          "alpha": 1.0,
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
         }
       }
     },
-    "npmjs.com": {
-      "domain": "npmjs.com",
-      "framework": "next-14",
-      "blocklist_additions": [
-        "logs.npmjs.com",
-        "telemetry.npmjs.com"
-      ],
+    "nextjs.org": {
+      "domain": "nextjs.org",
+      "framework": null,
+      "blocklist_additions": [],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 600,
-        "p90_ms": 1200,
-        "p95_ms": 2000
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "next_inlined_data",
+      "shape_hint": null,
       "posteriors": {
-        "block:logs.npmjs.com": {
-          "alpha": 1.0,
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
-        },
-        "block:telemetry.npmjs.com": {
-          "alpha": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "nuxt.com": {
+      "domain": "nuxt.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
-        },
-        "settle_fast:next-14": {
-          "alpha": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "old.reddit.com": {
+      "domain": "old.reddit.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:web_components": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        }
+      }
+    },
+    "open.spotify.com": {
+      "domain": "open.spotify.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "opensea.io": {
+      "domain": "opensea.io",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "pkg.go.dev": {
+      "domain": "pkg.go.dev",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
         }
       }
     },
     "polymarket.com": {
       "domain": "polymarket.com",
-      "framework": "react-18",
-      "blocklist_additions": [
-        "polymarket-amp.s3.us-east-2.amazonaws.com"
-      ],
+      "framework": null,
+      "blocklist_additions": [],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 1200,
-        "p90_ms": 2200,
-        "p95_ms": 3500
+        "p50_ms": 5,
+        "p90_ms": 5,
+        "p95_ms": 5
       },
-      "shape_hint": "card_grid_spa",
+      "shape_hint": null,
       "posteriors": {
-        "block:polymarket-amp.s3.us-east-2.amazonaws.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
         "settle_fast:react-18": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         }
       }
     },
-    "reddit.com": {
-      "domain": "reddit.com",
-      "framework": "web_components",
+    "pypi.org": {
+      "domain": "pypi.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 102,
+        "p90_ms": 102,
+        "p95_ms": 102
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "react.dev": {
+      "domain": "react.dev",
+      "framework": null,
       "blocklist_additions": [
-        "events.redditmedia.com",
-        "alb.reddit.com",
-        "alb.staging.reddit.com",
-        "w3-reporting-nel.reddit.com"
+        "googletagmanager.com",
+        "www.googletagmanager.com"
       ],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 1500,
-        "p90_ms": 3000,
-        "p95_ms": 5000
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "web_components_dom_heavy",
+      "shape_hint": null,
       "posteriors": {
-        "block:events.redditmedia.com": {
+        "block:googletagmanager.com": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         },
-        "block:alb.reddit.com": {
-          "alpha": 1.0,
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
         },
-        "block:alb.staging.reddit.com": {
-          "alpha": 1.0,
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        }
+      }
+    },
+    "replicate.com": {
+      "domain": "replicate.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "shop.snapchat.com": {
+      "domain": "shop.snapchat.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {}
+    },
+    "shop.tesla.com": {
+      "domain": "shop.tesla.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "slashdot.org": {
+      "domain": "slashdot.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 3210,
+        "p90_ms": 3307,
+        "p95_ms": 3307
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "soundcloud.com": {
+      "domain": "soundcloud.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org"
+      ],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 1.0,
+          "beta": 11.0,
+          "n": 10
         },
-        "block:w3-reporting-nel.reddit.com": {
+        "settle_fast:_unknown": {
           "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "stackoverflow.com": {
+      "domain": "stackoverflow.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "googletagmanager.com",
+        "doubleclick.net",
+        "www.googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:doubleclick.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "stripe.com": {
+      "domain": "stripe.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "substack.com": {
+      "domain": "substack.com",
+      "framework": null,
+      "blocklist_additions": [
+        "static.cloudflareinsights.com",
+        "datadoghq-browser-agent.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:static.cloudflareinsights.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:datadoghq-browser-agent.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "svelte.dev": {
+      "domain": "svelte.dev",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "tailwindcss.com": {
+      "domain": "tailwindcss.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "techcrunch.com": {
+      "domain": "techcrunch.com",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com",
+        "connect.facebook.net",
+        "amazon-adsystem.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 323,
+        "p90_ms": 325,
+        "p95_ms": 325
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:connect.facebook.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:amazon-adsystem.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "text.npr.org": {
+      "domain": "text.npr.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "vercel.com": {
+      "domain": "vercel.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "vuejs.org": {
+      "domain": "vuejs.org",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.airbnb.com": {
+      "domain": "www.airbnb.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 274,
+        "p90_ms": 492,
+        "p95_ms": 492
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.aljazeera.com": {
+      "domain": "www.aljazeera.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "googletagmanager.com",
+        "static.chartbeat.com",
+        "cdn.amplitude.com",
+        "www.googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:cdn.amplitude.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:static.chartbeat.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.allbirds.com": {
+      "domain": "www.allbirds.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "cdn.amplitude.com",
+        "googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1501,
+        "p90_ms": 1502,
+        "p95_ms": 1502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:cdn.amplitude.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.bandcamp.com": {
+      "domain": "www.bandcamp.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.bbc.com": {
+      "domain": "www.bbc.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.optimizely.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 45001,
+        "p90_ms": 45001,
+        "p95_ms": 45001
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.optimizely.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.bls.gov": {
+      "domain": "www.bls.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.census.gov": {
+      "domain": "www.census.gov",
+      "framework": null,
+      "blocklist_additions": [
+        "assets.adobedtm.com",
+        "static.cloudflareinsights.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 102,
+        "p90_ms": 102,
+        "p95_ms": 102
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:static.cloudflareinsights.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:assets.adobedtm.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.cloudflarestatus.com": {
+      "domain": "www.cloudflarestatus.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.cnbc.com": {
+      "domain": "www.cnbc.com",
+      "framework": null,
+      "blocklist_additions": [
+        "assets.adobedtm.com",
+        "zephr-templates.cnbc.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1087,
+        "p90_ms": 1129,
+        "p95_ms": 1129
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:assets.adobedtm.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:zephr-templates.cnbc.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:react-18": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.congress.gov": {
+      "domain": "www.congress.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.ebay.com": {
+      "domain": "www.ebay.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 333,
+        "p90_ms": 335,
+        "p95_ms": 335
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.economist.com": {
+      "domain": "www.economist.com",
+      "framework": null,
+      "blocklist_additions": [
+        "static.cloudflareinsights.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:static.cloudflareinsights.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.engadget.com": {
+      "domain": "www.engadget.com",
+      "framework": null,
+      "blocklist_additions": [
+        "doubleclick.net",
+        "googletagmanager.com",
+        "amazon-adsystem.com",
+        "www.googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 676,
+        "p90_ms": 862,
+        "p95_ms": 862
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:doubleclick.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:amazon-adsystem.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.etsy.com": {
+      "domain": "www.etsy.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.fda.gov": {
+      "domain": "www.fda.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.federalreserve.gov": {
+      "domain": "www.federalreserve.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.figma.com": {
+      "domain": "www.figma.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.hugobossoutlet.com": {
+      "domain": "www.hugobossoutlet.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {}
+    },
+    "www.imdb.com": {
+      "domain": "www.imdb.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.last.fm": {
+      "domain": "www.last.fm",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "amazon-adsystem.com",
+        "doubleclick.net"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 5,
+        "p90_ms": 5,
+        "p95_ms": 5
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:doubleclick.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:amazon-adsystem.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.nih.gov": {
+      "domain": "www.nih.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 501,
+        "p90_ms": 502,
+        "p95_ms": 502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.notion.so": {
+      "domain": "www.notion.so",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.npmjs.com": {
+      "domain": "www.npmjs.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:next-14": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.npr.org": {
+      "domain": "www.npr.org",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.cookielaw.org",
+        "cdn.optimizely.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 946,
+        "p90_ms": 1161,
+        "p95_ms": 1161
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:cdn.optimizely.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.producthunt.com": {
+      "domain": "www.producthunt.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": null,
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.reddit.com": {
+      "domain": "www.reddit.com",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com",
+        "www.googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
         },
         "settle_fast:web_components": {
-          "alpha": 1.0,
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
+          "n": 5
         }
       }
     },
-    "youtube.com": {
-      "domain": "youtube.com",
-      "framework": "data_store_spa",
+    "www.reuters.com": {
+      "domain": "www.reuters.com",
+      "framework": null,
       "blocklist_additions": [
-        "www.youtube.com/youtubei/v1/log_event",
-        "youtube.com/api/stats",
-        "youtube.com/csi_204",
-        "youtube.com/generate_204",
-        "play.google.com/log"
+        "cdn.cookielaw.org",
+        "googletagmanager.com"
       ],
       "required_patterns": [],
       "settle_distribution": {
-        "p50_ms": 2000,
-        "p90_ms": 4000,
-        "p95_ms": 8000
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
       },
-      "shape_hint": "data_store_inlined_ytinitialdata",
+      "shape_hint": null,
       "posteriors": {
-        "block:www.youtube.com/youtubei/v1/log_event": {
+        "block:cdn.cookielaw.org": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         },
-        "block:youtube.com/api/stats": {
+        "block:googletagmanager.com": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         },
-        "block:youtube.com/csi_204": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.supremecourt.gov": {
+      "domain": "www.supremecourt.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 2,
+        "p90_ms": 2,
+        "p95_ms": 2
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.theatlantic.com": {
+      "domain": "www.theatlantic.com",
+      "framework": null,
+      "blocklist_additions": [
+        "static.chartbeat.com",
+        "amazon-adsystem.com",
+        "doubleclick.net",
+        "c.amazon-adsystem.com",
+        "securepubads.g.doubleclick.net"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 502,
+        "p90_ms": 502,
+        "p95_ms": 502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:doubleclick.net": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         },
-        "block:youtube.com/generate_204": {
+        "block:static.chartbeat.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:amazon-adsystem.com": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
         },
-        "block:play.google.com/log": {
+        "block:securepubads.g.doubleclick.net": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "block:c.amazon-adsystem.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
           "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.theguardian.com": {
+      "domain": "www.theguardian.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 790,
+        "p90_ms": 831,
+        "p95_ms": 831
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.theregister.com": {
+      "domain": "www.theregister.com",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com",
+        "www.googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
         },
+        "block:www.googletagmanager.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.theverge.com": {
+      "domain": "www.theverge.com",
+      "framework": null,
+      "blocklist_additions": [
+        "cdn.concert.io",
+        "config.aps.amazon-adsystem.com",
+        "client.aps.amazon-adsystem.com",
+        "cdn.cookielaw.org",
+        "pub.doubleverify.com",
+        "googletagservices.com",
+        "www.googletagservices.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:cdn.cookielaw.org": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:googletagservices.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:config.aps.amazon-adsystem.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:client.aps.amazon-adsystem.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:cdn.concert.io": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:pub.doubleverify.com": {
+          "alpha": 6.0,
+          "beta": 6.0,
+          "n": 10
+        },
+        "block:www.googletagservices.com": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.twitch.tv": {
+      "domain": "www.twitch.tv",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.usa.gov": {
+      "domain": "www.usa.gov",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 40,
+        "p90_ms": 89,
+        "p95_ms": 89
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.usajobs.gov": {
+      "domain": "www.usajobs.gov",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "settle_fast:_unknown": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "www.whitehouse.gov": {
+      "domain": "www.whitehouse.gov",
+      "framework": null,
+      "blocklist_additions": [
+        "googletagmanager.com"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1001,
+        "p90_ms": 1002,
+        "p95_ms": 1002
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:googletagmanager.com": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.wired.com": {
+      "domain": "www.wired.com",
+      "framework": null,
+      "blocklist_additions": [
+        "doubleclick.net",
+        "securepubads.g.doubleclick.net"
+      ],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 1501,
+        "p90_ms": 1502,
+        "p95_ms": 1502
+      },
+      "shape_hint": null,
+      "posteriors": {
+        "block:doubleclick.net": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        },
+        "block:securepubads.g.doubleclick.net": {
+          "alpha": 6.0,
+          "beta": 1.0,
+          "n": 5
+        },
+        "settle_fast:_unknown": {
+          "alpha": 1.0,
+          "beta": 6.0,
+          "n": 5
+        }
+      }
+    },
+    "www.youtube.com": {
+      "domain": "www.youtube.com",
+      "framework": null,
+      "blocklist_additions": [],
+      "required_patterns": [],
+      "settle_distribution": {
+        "p50_ms": 0,
+        "p90_ms": 0,
+        "p95_ms": 0
+      },
+      "shape_hint": null,
+      "posteriors": {
         "settle_fast:data_store_spa": {
-          "alpha": 1.0,
+          "alpha": 6.0,
           "beta": 1.0,
-          "n": 0
-        }
-      }
-    },
-    "zillow.com": {
-      "domain": "zillow.com",
-      "framework": "react-18",
-      "blocklist_additions": [
-        "geo.zillow.com",
-        "perimeterx-bot-detection.zillow.com"
-      ],
-      "required_patterns": [],
-      "settle_distribution": {
-        "p50_ms": 2500,
-        "p90_ms": 5000,
-        "p95_ms": 8000
-      },
-      "shape_hint": "bot_protected_ssr_with_listings",
-      "posteriors": {
-        "block:geo.zillow.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "block:perimeterx-bot-detection.zillow.com": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
-        },
-        "settle_fast:react-18": {
-          "alpha": 1.0,
-          "beta": 1.0,
-          "n": 0
+          "n": 5
         }
       }
     }
