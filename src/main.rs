@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 mod bytecode_cache;
 mod network_store;
 mod policy;
+mod prefit;
 mod profile;
 use profile::Profile;
 
@@ -377,6 +378,13 @@ struct Session {
     bytecode_cache_root: std::path::PathBuf,
     shim_hash: String,
     bytecode_cache_disabled: bool,
+    /// Loaded at Session::new from the embedded JSON bundle. Each navigate
+    /// looks up the target domain to apply per-(domain, framework)
+    /// decision parameters trained centrally — extends the global
+    /// Tier-1 blocklist with per-site additions, surfaces settle hints
+    /// via the prefit_applied event. None on parse failure (rare; would
+    /// be a build-time bug). See src/prefit.rs (R1 from white paper §6).
+    prefit: Option<prefit::PrefitBundle>,
 }
 
 impl Session {
@@ -573,6 +581,7 @@ impl Session {
         if !bytecode_cache_disabled {
             bytecode_cache::prune(&bytecode_cache_root, bytecode_cache::max_total_bytes());
         }
+        let prefit = prefit::PrefitBundle::load_embedded();
         Ok(Self {
             js_rt,
             js_ctx,
@@ -588,6 +597,7 @@ impl Session {
             bytecode_cache_root,
             shim_hash,
             bytecode_cache_disabled,
+            prefit,
         })
     }
 
@@ -892,6 +902,32 @@ impl Session {
             }),
         );
 
+        // Prefit lookup (R2 from white paper §6 Track 1). Look up the
+        // target host in the embedded prefit bundle. If we have an entry,
+        // emit `prefit_applied` so drivers see what per-domain knowledge
+        // is in play, and capture the additions for the script-fetch loop
+        // below to extend Tier-1 blocking with.
+        let prefit_for_domain: Option<&prefit::DomainPrefit> = self.prefit.as_ref().and_then(|b| {
+            url::Url::parse(&final_url)
+                .ok()
+                .and_then(|u| u.host_str().map(|s| s.to_string()))
+                .and_then(|host| b.lookup_domain(&host))
+        });
+        if let Some(p) = prefit_for_domain {
+            emit_event(
+                "prefit_applied",
+                json!({
+                    "schema_version": 1,
+                    "navigation_id": nav_id,
+                    "domain": p.domain,
+                    "framework": p.framework,
+                    "blocklist_additions": p.blocklist_additions.len(),
+                    "shape_hint": p.shape_hint,
+                    "settle_distribution": p.settle_distribution,
+                }),
+            );
+        }
+
         // Update window.location for any page scripts that read it.
         let url_lit = serde_json::to_string(&final_url)?;
         let _ = self.eval(&format!("__setLocation({url_lit})"));
@@ -963,6 +999,32 @@ impl Session {
                                     "kind": "static_script",
                                     "category": d.category.map(|c| c.as_str()),
                                     "matched": d.matched_pattern,
+                                }),
+                            );
+                            policy_blocked_count += 1;
+                            skipped_ids.insert(idx);
+                            continue;
+                        }
+                        // Tier-1.5: per-domain blocklist additions from the
+                        // prefit bundle. URLs that aren't in the global
+                        // Tier-1 list but ARE in this domain's known-tracker
+                        // set are also skipped. Reason recorded as
+                        // "prefit_blocklist" so drivers can distinguish.
+                        if let (Some(bundle), Some(p)) = (self.prefit.as_ref(), prefit_for_domain)
+                            && bundle.matches_blocklist_addition(p, u)
+                        {
+                            emit_event(
+                                "script_decision",
+                                json!({
+                                    "schema_version": 1,
+                                    "navigation_id": nav_id,
+                                    "script_id": idx,
+                                    "url": u,
+                                    "host": host,
+                                    "kind": kind_str,
+                                    "action": "skip",
+                                    "reason": "prefit_blocklist",
+                                    "domain": p.domain,
                                 }),
                             );
                             policy_blocked_count += 1;
@@ -2429,6 +2491,35 @@ async fn main() -> Result<()> {
             println!("{n}");
         }
         return Ok(());
+    }
+    if args.iter().any(|a| a == "--prefit-info") {
+        match prefit::PrefitBundle::load_embedded() {
+            Some(b) => {
+                println!("schema_version: {}", b.schema_version);
+                println!("training_pipeline_version: {}", b.training_pipeline_version);
+                println!("fit_timestamp: {}", b.fit_timestamp);
+                println!("fit_corpus_size: {}", b.fit_corpus_size);
+                println!("domains: {}", b.domain_count());
+                let mut keys: Vec<_> = b.domains.keys().collect();
+                keys.sort();
+                for k in keys {
+                    if let Some(d) = b.domains.get(k) {
+                        println!(
+                            "  {:30} framework={:20} blocklist_additions={:3} shape={}",
+                            k,
+                            d.framework.as_deref().unwrap_or("-"),
+                            d.blocklist_additions.len(),
+                            d.shape_hint.as_deref().unwrap_or("-")
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            None => {
+                eprintln!("prefit: failed to load embedded bundle");
+                std::process::exit(2);
+            }
+        }
     }
     if args.get(1).map(|s| s.as_str()) == Some("policy-check") {
         return policy_check_cmd(&args[2..]);
