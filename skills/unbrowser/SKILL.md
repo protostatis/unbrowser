@@ -1,7 +1,13 @@
 ---
 name: unbrowser
 description: Cheap first-pass web browsing without launching Chrome — fetch SSR pages, follow links, query the DOM, run JS, detect bot-wall challenges. Escalate to OpenClaw's managed browser when the page can't be served headlessly.
-version: 0.0.9
+version: 0.0.10
+tags:
+  - browser
+  - web-search
+  - scraping
+  - web-automation
+  - headless
 metadata:
   openclaw:
     requires:
